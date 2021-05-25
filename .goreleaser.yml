@@ -1,8 +1,8 @@
-project_name: app
+project_name: aliyun-fc-releaser
 release:
   github:
-    owner: owner
-    name: repo
+    owner: wsw0108
+    name: aliyun-fc-releaser
 before:
   hooks:
     - go mod tidy
