@@ -87,7 +87,7 @@ func main() {
 					continue
 				}
 				triggerType := *trigger.TriggerType
-				if !strings.EqualFold(triggerType, "HTTP") {
+				if !strings.EqualFold(triggerType, "http") {
 					continue
 				}
 				if trigger.Qualifier != nil {
@@ -227,7 +227,7 @@ func CreateHttpTrigger(client *fc.Client, serviceName string, functionName strin
 	createTriggerInput.WithQualifier(qualifier)
 	triggerName := fmt.Sprintf("%s-%s", trigger.Name, qualifier)
 	createTriggerInput.WithTriggerName(triggerName)
-	createTriggerInput.WithTriggerType("HTTP")
+	createTriggerInput.WithTriggerType("http")
 	triggerConfig := fc.NewHTTPTriggerConfig()
 	triggerConfig.WithAuthType(trigger.AuthType)
 	triggerConfig.WithMethods(trigger.Methods...)
@@ -311,7 +311,7 @@ func parseFunction(name string, values map[interface{}]interface{}) *Function {
 		name := key.(string)
 		props := value.(map[interface{}]interface{})
 		typ := props["Type"].(string)
-		if typ != "HTTP" {
+		if !strings.EqualFold(typ, "http") {
 			continue
 		}
 		trigger := parseHttpTrigger(name, props["Properties"].(map[interface{}]interface{}))
@@ -332,7 +332,7 @@ func parseHttpTrigger(name string, props map[interface{}]interface{}) *HttpTrigg
 	}
 	return &HttpTrigger{
 		Name:     name,
-		AuthType: authType,
+		AuthType: strings.ToLower(authType),
 		Methods:  methods,
 	}
 }
