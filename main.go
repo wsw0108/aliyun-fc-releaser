@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/aliyun/fc-go-sdk"
+	"github.com/blang/semver/v4"
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/ros/standard"
 	"gopkg.in/yaml.v2"
@@ -52,6 +53,29 @@ func main() {
 	flag.StringVar(&functionName, "function-name", "", "function name")
 	flag.Parse()
 
+	if releaseVersion == "" {
+		log.Println("release version required")
+		os.Exit(-1)
+	}
+
+	if stackName != "" && regionID == "" {
+		log.Println("region required when using ros(-stack-name)")
+		os.Exit(-1)
+	}
+
+	var major uint64
+	{
+		var version string
+		if releaseVersion[0] == 'v' {
+			version = releaseVersion[1:]
+		} else {
+			version = releaseVersion
+		}
+		ver := semver.MustParse(version)
+		major = ver.Major
+		fmt.Println("Major:", major)
+	}
+
 	var config Config
 	cf, err := os.Open(configFile)
 	if err != nil {
@@ -90,8 +114,12 @@ func main() {
 		RegionID:  regionID,
 	}
 
-	// TODO: v1.2.3 -> v1_2_3, or v1.2.3 -> v1
-	aliasName := releaseVersion
+	// NOTE: 1.2.3/v1.2.3 -> v1_2_3, （字母开头，字母数字下划线中划线）
+	var aliasName string
+	aliasName = strings.ReplaceAll(releaseVersion, ".", "_")
+	if aliasName[0] != 'v' {
+		aliasName = "v" + aliasName
+	}
 
 	{
 		if serviceName != "" && functionName != "" {
@@ -117,7 +145,7 @@ func main() {
 					continue
 				}
 				fcHttpTrigger := trigger.TriggerConfig.(*fc.HTTPTriggerConfig)
-				triggerName := fmt.Sprintf("%s-%s", *trigger.TriggerName, aliasName)
+				triggerName := fmt.Sprintf("%s-%s", *trigger.TriggerName, releaseVersion)
 				httpTrigger := &HttpTrigger{
 					Name:     triggerName,
 					AuthType: *fcHttpTrigger.AuthType,
@@ -215,7 +243,7 @@ func main() {
 			}
 			for _, service := range services {
 				for _, function := range service.Functions {
-					if err = CreateProvisionConfig(client, service.Name, aliasName, function.Name, 1); err != nil {
+					if err = CreateProvisionConfig(client, service.Name, aliasName, function.Name, instances); err != nil {
 						log.Fatalln(err)
 					}
 				}
@@ -247,7 +275,7 @@ func CreateHttpTrigger(client *fc.Client, serviceName string, functionName strin
 	createTriggerInput := fc.NewCreateTriggerInput(serviceName, functionName)
 	// NOTE: 一个版本qualifier只能创建一个触发器
 	createTriggerInput.WithQualifier(qualifier)
-	triggerName := fmt.Sprintf("%s-%s", trigger.Name, qualifier)
+	triggerName := fmt.Sprintf("%s-%s", trigger.Name, releaseVersion)
 	createTriggerInput.WithTriggerName(triggerName)
 	createTriggerInput.WithTriggerType("http")
 	triggerConfig := fc.NewHTTPTriggerConfig()
