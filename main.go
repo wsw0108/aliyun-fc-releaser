@@ -92,7 +92,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	client, err := fc.NewClient(config.Endpoint, config.ApiVersion, config.AccessKeyID, config.AccessKeySecret)
+	fcClient, err := fc.NewClient(config.Endpoint, config.ApiVersion, config.AccessKeyID, config.AccessKeySecret)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -114,6 +114,8 @@ func main() {
 	versionPrefix := "/" + parts[0]
 
 	parseCtx := &ParseContext{
+		fcClien: fcClient,
+
 		ROSClient: rosClient,
 		StackName: stackName,
 		RegionID:  regionID,
@@ -124,11 +126,11 @@ func main() {
 
 	{
 		if serviceName != "" && functionName != "" {
-			if _, err = PublishAndCreateAlias(client, serviceName, releaseVersion, aliasName); err != nil {
+			if _, err = PublishAndCreateAlias(fcClient, serviceName, releaseVersion, aliasName); err != nil {
 				log.Fatalln("CreateAlias", err)
 			}
 			listTriggerInput := fc.NewListTriggersInput(serviceName, functionName)
-			listTriggerOutput, err := client.ListTriggers(listTriggerInput)
+			listTriggerOutput, err := fcClient.ListTriggers(listTriggerInput)
 			if err != nil {
 				log.Fatalln("ListTriggers", err)
 			}
@@ -152,7 +154,7 @@ func main() {
 					AuthType: *fcHttpTrigger.AuthType,
 					Methods:  fcHttpTrigger.Methods,
 				}
-				if err = CreateHttpTrigger(client, serviceName, functionName, httpTrigger, releaseVersion, aliasName); err != nil {
+				if err = CreateHttpTrigger(fcClient, serviceName, functionName, httpTrigger, releaseVersion, aliasName); err != nil {
 					log.Fatalln("CreateTrigger", err)
 				}
 				triggerCreated = true
@@ -161,7 +163,7 @@ func main() {
 				return
 			}
 			listCustomDomainInput := fc.NewListCustomDomainsInput()
-			listCustomDomainOutput, err := client.ListCustomDomains(listCustomDomainInput)
+			listCustomDomainOutput, err := fcClient.ListCustomDomains(listCustomDomainInput)
 			fmt.Println("ListCustomDomain", listCustomDomainOutput)
 			for _, customDomain := range listCustomDomainOutput.CustomDomains {
 				if customDomain.RouteConfig == nil || len(customDomain.RouteConfig.Routes) == 0 {
@@ -195,14 +197,14 @@ func main() {
 					}
 				}
 				fmt.Println("updateCustomDomainInput", updateCustomDomainInput)
-				updateCustomDomainOutput, err := client.UpdateCustomDomain(updateCustomDomainInput)
+				updateCustomDomainOutput, err := fcClient.UpdateCustomDomain(updateCustomDomainInput)
 				if err != nil {
 					log.Fatalln("UpdateCustomDomain", err)
 				}
 				fmt.Println("UpdateCustomDomain", updateCustomDomainOutput)
 			}
 			if !noProvision {
-				if err = CreateProvisionConfig(client, serviceName, aliasName, functionName, instances); err != nil {
+				if err = CreateProvisionConfig(fcClient, serviceName, aliasName, functionName, instances); err != nil {
 					log.Fatalln("CreateProvisionConfig", err)
 				}
 			}
@@ -228,26 +230,26 @@ func main() {
 				}
 			}
 			for _, service := range services {
-				if _, err = PublishAndCreateAlias(client, service.Name, releaseVersion, aliasName); err != nil {
+				if _, err = PublishAndCreateAlias(fcClient, service.Name, releaseVersion, aliasName); err != nil {
 					log.Fatalln(err)
 				}
 				for _, function := range service.Functions {
 					for _, trigger := range function.Triggers {
-						if err = CreateHttpTrigger(client, service.Name, function.Name, trigger, releaseVersion, aliasName); err != nil {
+						if err = CreateHttpTrigger(fcClient, service.Name, function.Name, trigger, releaseVersion, aliasName); err != nil {
 							log.Fatalln(err)
 						}
 					}
 				}
 			}
 			for _, customDomain := range customDomains {
-				if err = UpdateCustomDomain(client, customDomain, aliasName); err != nil {
+				if err = UpdateCustomDomain(fcClient, customDomain, aliasName); err != nil {
 					log.Fatalln(err)
 				}
 			}
 			if !noProvision {
 				for _, service := range services {
 					for _, function := range service.Functions {
-						if err = CreateProvisionConfig(client, service.Name, aliasName, function.Name, instances); err != nil {
+						if err = CreateProvisionConfig(fcClient, service.Name, aliasName, function.Name, instances); err != nil {
 							log.Fatalln(err)
 						}
 					}
@@ -342,6 +344,8 @@ type Service struct {
 }
 
 type ParseContext struct {
+	fcClien *fc.Client
+
 	ROSClient *standard.Client
 	StackName string
 	RegionID  string
@@ -485,12 +489,39 @@ type CustomDomain struct {
 }
 
 func parseCustomDomain(ctx *ParseContext, resourceName string, values map[interface{}]interface{}) *CustomDomain {
-	// TODO: handle "DomainName: Auto"
 	props := values["Properties"].(map[interface{}]interface{})
 	domainName := props["DomainName"].(string)
 	protocol := props["Protocol"].(string)
 	routeConfigMap := props["RouteConfig"].(map[interface{}]interface{})
 	routesMap := routeConfigMap["Routes"].(map[interface{}]interface{})
+	if domainName == "Auto" {
+		for _, value := range routesMap {
+			props := value.(map[interface{}]interface{})
+			serviceName := props["ServiceName"].(string)
+			serviceName, err := ctx.GetServiceName(serviceName)
+			if err != nil {
+				panic(err)
+			}
+			functionName := props["FunctionName"].(string)
+			req := fc.NewListCustomDomainsInput()
+			resp, err := ctx.fcClien.ListCustomDomains(req)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			for _, customDomain := range resp.CustomDomains {
+				if strings.HasSuffix(*customDomain.DomainName, ".test.functioncompute.com") {
+					for _, route := range customDomain.RouteConfig.Routes {
+						if *route.ServiceName == serviceName && *route.FunctionName == functionName {
+							domainName = *customDomain.DomainName
+						}
+					}
+				}
+			}
+		}
+	}
+	if domainName == "Auto" {
+		panic("can not handle 'DomainName: Auto'")
+	}
 	routeConfig := &RouteConfig{}
 	for key, value := range routesMap {
 		path := key.(string)
