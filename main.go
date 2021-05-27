@@ -33,6 +33,7 @@ func main() {
 		releaseVersion string
 		instances      int64
 		versionedRoute bool
+		noProvision    bool
 		stackName      string
 		regionID       string
 		serviceName    string
@@ -48,6 +49,7 @@ func main() {
 	flag.StringVar(&releaseVersion, "r", "", "release version")
 	flag.Int64Var(&instances, "instances", 1, "number of instances")
 	flag.BoolVar(&versionedRoute, "versioned-route", false, "create versioned route")
+	flag.BoolVar(&noProvision, "no-provision", false, "create provision")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
 	flag.StringVar(&regionID, "region", "", "region name")
 	flag.StringVar(&serviceName, "service-name", "", "service name")
@@ -195,8 +197,10 @@ func main() {
 				}
 				fmt.Println("UpdateCustomDomain", updateCustomDomainOutput)
 			}
-			if err = CreateProvisionConfig(client, serviceName, aliasName, functionName, instances); err != nil {
-				log.Fatalln("CreateProvisionConfig", err)
+			if !noProvision {
+				if err = CreateProvisionConfig(client, serviceName, aliasName, functionName, instances); err != nil {
+					log.Fatalln("CreateProvisionConfig", err)
+				}
 			}
 		} else {
 			resources := template["Resources"].(map[interface{}]interface{})
@@ -236,10 +240,12 @@ func main() {
 					log.Fatalln(err)
 				}
 			}
-			for _, service := range services {
-				for _, function := range service.Functions {
-					if err = CreateProvisionConfig(client, service.Name, aliasName, function.Name, instances); err != nil {
-						log.Fatalln(err)
+			if !noProvision {
+				for _, service := range services {
+					for _, function := range service.Functions {
+						if err = CreateProvisionConfig(client, service.Name, aliasName, function.Name, instances); err != nil {
+							log.Fatalln(err)
+						}
 					}
 				}
 			}
@@ -475,6 +481,7 @@ type CustomDomain struct {
 }
 
 func parseCustomDomain(ctx *ParseContext, resourceName string, values map[interface{}]interface{}) *CustomDomain {
+	// TODO: handle "DomainName: Auto"
 	props := values["Properties"].(map[interface{}]interface{})
 	domainName := props["DomainName"].(string)
 	protocol := props["Protocol"].(string)
