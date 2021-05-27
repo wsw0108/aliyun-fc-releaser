@@ -140,7 +140,7 @@ func main() {
 					continue
 				}
 				fcHttpTrigger := trigger.TriggerConfig.(*fc.HTTPTriggerConfig)
-				triggerName := fmt.Sprintf("%s-%s", *trigger.TriggerName, releaseVersion)
+				triggerName := fmt.Sprintf("%s-%s", *trigger.TriggerName, aliasName)
 				httpTrigger := &HttpTrigger{
 					Name:     triggerName,
 					AuthType: *fcHttpTrigger.AuthType,
@@ -271,7 +271,7 @@ func CreateHttpTrigger(client *fc.Client, serviceName string, functionName strin
 	createTriggerInput := fc.NewCreateTriggerInput(serviceName, functionName)
 	// NOTE: 一个版本qualifier只能创建一个触发器
 	createTriggerInput.WithQualifier(qualifier)
-	triggerName := fmt.Sprintf("%s-%s", trigger.Name, releaseVersion)
+	triggerName := fmt.Sprintf("%s-%s", trigger.Name, qualifier)
 	createTriggerInput.WithTriggerName(triggerName)
 	createTriggerInput.WithTriggerType("http")
 	triggerConfig := fc.NewHTTPTriggerConfig()
