@@ -1,5 +1,3 @@
-# go-app-template
+# aliyun fc releaser
 
-- setup goreleaser for release
-- change 'project_name' in '.goreleaser.yml'
-- change 'release/github/{owner,name}' in '.goreleaser.yml'
+Tool to release version on aliyun fc platform.
