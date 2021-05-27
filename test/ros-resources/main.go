@@ -168,15 +168,39 @@ func main() {
 		fmt.Println("rosClient1, GetStack", stack)
 	}
 	if resourceName != "" {
-		resource, err := rosClient1.GetStackResource(&standard.GetStackResourceRequest{
+		type ResourceAttribute struct {
+			ResourceAttributeValue interface{}
+			ResourceAttributeKey   string
+		}
+		type GetStackResourceResponse struct {
+			Status            string
+			Description       string
+			LogicalResourceId string
+			StackId           string
+
+			StackName           string
+			StatusReason        string
+			PhysicalResourceId  string
+			ResourceType        string
+			CreateTime          string
+			Metadata            map[string]string
+			UpdateTime          string
+			ResourceAttributes  []ResourceAttribute
+			RequestId           string
+			DriftDetectionTime  string
+			ResourceDriftStatus string
+		}
+		req := &standard.GetStackResourceRequest{
 			StackId:                stackID,
 			LogicalResourceId:      resourceName,
 			ShowResourceAttributes: true,
-		})
+		}
+		res := &GetStackResourceResponse{}
+		err = rosClient1.Invoke("GetStackResource", req, res)
 		if err != nil {
 			log.Fatalln(err)
 		}
-		fmt.Println("rosClient1, GetStackResource", resource)
+		fmt.Println("rosClient1, GetStackResource", res)
 	}
 
 	fmt.Println(strings.Repeat("-", 50))

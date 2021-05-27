@@ -5,6 +5,8 @@
 *.so
 *.dylib
 
+/aliyun-fc-releaser
+
 # Test binary, built with `go test -c`
 *.test
 
