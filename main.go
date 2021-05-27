@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -49,22 +50,12 @@ func main() {
 	flag.StringVar(&releaseVersion, "r", "", "release version")
 	flag.Int64Var(&instances, "instances", 1, "number of instances")
 	flag.BoolVar(&versionedRoute, "versioned-route", false, "create versioned route")
-	flag.BoolVar(&noProvision, "no-provision", false, "create provision")
+	flag.BoolVar(&noProvision, "no-provision", false, "do not create provision")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
-	flag.StringVar(&regionID, "region", "", "region name")
+	flag.StringVar(&regionID, "region", "", "region name, default value will be extracted from endpoint")
 	flag.StringVar(&serviceName, "service-name", "", "service name")
 	flag.StringVar(&functionName, "function-name", "", "function name")
 	flag.Parse()
-
-	if releaseVersion == "" {
-		log.Println("release version required")
-		os.Exit(-1)
-	}
-
-	if stackName != "" && regionID == "" {
-		log.Println("region required when using ros(-stack-name)")
-		os.Exit(-1)
-	}
 
 	var config Config
 	cf, err := os.Open(configFile)
@@ -75,6 +66,19 @@ func main() {
 	err = yaml.NewDecoder(cf).Decode(&config)
 	if err != nil {
 		log.Fatalln(err)
+	}
+
+	if regionID == "" {
+		regionID = extractRegion(config.Endpoint)
+	}
+	if stackName != "" && regionID == "" {
+		log.Println("region required when using ros(-stack-name)")
+		os.Exit(-1)
+	}
+
+	if releaseVersion == "" {
+		log.Println("release version required")
+		os.Exit(-1)
 	}
 
 	var template map[string]interface{}
@@ -554,4 +558,17 @@ type GetStackResourceResponse struct {
 	RequestId           string
 	DriftDetectionTime  string
 	ResourceDriftStatus string
+}
+
+func extractRegion(endpoint string) string {
+	re := "^https?:\\/\\/[^.]+\\.([^.]+)\\..+$"
+	regex, err := regexp.Compile(re)
+	if err != nil {
+		return ""
+	}
+	matches := regex.FindStringSubmatch(endpoint)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
 }
