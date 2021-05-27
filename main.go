@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/aliyun/fc-go-sdk"
-	"github.com/blang/semver/v4"
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/ros/standard"
 	"gopkg.in/yaml.v2"
@@ -33,6 +32,7 @@ func main() {
 		templateFile   string
 		releaseVersion string
 		instances      int64
+		versionedRoute bool
 		stackName      string
 		regionID       string
 		serviceName    string
@@ -47,6 +47,7 @@ func main() {
 	flag.StringVar(&templateFile, "t", "template.yml", "template.yml to use")
 	flag.StringVar(&releaseVersion, "r", "", "release version")
 	flag.Int64Var(&instances, "instances", 1, "number of instances")
+	flag.BoolVar(&versionedRoute, "versioned-route", false, "create versioned route")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
 	flag.StringVar(&regionID, "region", "", "region name")
 	flag.StringVar(&serviceName, "service-name", "", "service name")
@@ -61,19 +62,6 @@ func main() {
 	if stackName != "" && regionID == "" {
 		log.Println("region required when using ros(-stack-name)")
 		os.Exit(-1)
-	}
-
-	var major uint64
-	{
-		var version string
-		if releaseVersion[0] == 'v' {
-			version = releaseVersion[1:]
-		} else {
-			version = releaseVersion
-		}
-		ver := semver.MustParse(version)
-		major = ver.Major
-		fmt.Println("Major:", major)
 	}
 
 	var config Config
@@ -108,17 +96,24 @@ func main() {
 		rosClient = standard.NewROSClient(config.AccessKeyID, config.AccessKeySecret, common.Region(regionID))
 	}
 
-	parseCtx := &ParseContext{
-		ROSClient: rosClient,
-		StackName: stackName,
-		RegionID:  regionID,
-	}
-
 	// NOTE: 1.2.3/v1.2.3 -> v1_2_3, （字母开头，字母数字下划线中划线）
 	var aliasName string
 	aliasName = strings.ReplaceAll(releaseVersion, ".", "_")
 	if aliasName[0] != 'v' {
 		aliasName = "v" + aliasName
+	}
+
+	// qualifier -> versionPrefix
+	parts := strings.Split(aliasName, "_")
+	versionPrefix := "/" + parts[0]
+
+	parseCtx := &ParseContext{
+		ROSClient: rosClient,
+		StackName: stackName,
+		RegionID:  regionID,
+
+		versionedRoute: versionedRoute,
+		versionPrefix:  versionPrefix,
 	}
 
 	{
@@ -272,6 +267,7 @@ func PublishAndCreateAlias(client *fc.Client, serviceName string, releaseVersion
 }
 
 func CreateHttpTrigger(client *fc.Client, serviceName string, functionName string, trigger *HttpTrigger, releaseVersion string, qualifier string) error {
+	// FIXME: 一个函数下最多创建10个触发器
 	createTriggerInput := fc.NewCreateTriggerInput(serviceName, functionName)
 	// NOTE: 一个版本qualifier只能创建一个触发器
 	createTriggerInput.WithQualifier(qualifier)
@@ -296,7 +292,9 @@ func UpdateCustomDomain(client *fc.Client, customDomain *CustomDomain, qualifier
 		fcPathConfig.WithPath(route.Path)
 		fcPathConfig.WithServiceName(route.ServiceName)
 		fcPathConfig.WithFunctionName(route.FunctionName)
-		fcPathConfig.WithQualifier(qualifier)
+		if route.versioned {
+			fcPathConfig.WithQualifier(qualifier)
+		}
 		routeConfig.Routes = append(routeConfig.Routes, fcPathConfig)
 	}
 	updateCustomDomainInput.WithRouteConfig(routeConfig)
@@ -310,6 +308,7 @@ func UpdateCustomDomain(client *fc.Client, customDomain *CustomDomain, qualifier
 }
 
 func CreateProvisionConfig(client *fc.Client, serviceName string, qualifier string, functionName string, targetInstances int64) error {
+	// TODO: 删除以前的版本的预留资源设置？
 	putProvisionConfigInput := fc.NewPutProvisionConfigInput(serviceName, qualifier, functionName)
 	putProvisionConfigInput.WithTarget(targetInstances)
 	_, err := client.PutProvisionConfig(putProvisionConfigInput)
@@ -336,6 +335,9 @@ type ParseContext struct {
 	ROSClient *standard.Client
 	StackName string
 	RegionID  string
+
+	versionedRoute bool
+	versionPrefix  string
 
 	mu      sync.Mutex
 	stackID string
@@ -459,6 +461,7 @@ type RouteConfig struct {
 }
 
 type PathConfig struct {
+	versioned    bool
 	Path         string
 	ServiceName  string
 	FunctionName string
@@ -480,8 +483,8 @@ func parseCustomDomain(ctx *ParseContext, resourceName string, values map[interf
 	routeConfig := &RouteConfig{}
 	for key, value := range routesMap {
 		path := key.(string)
-		pathConfig := parsePathConfig(ctx, path, value.(map[interface{}]interface{}))
-		routeConfig.Routes = append(routeConfig.Routes, pathConfig)
+		pathConfigs := parsePathConfig(ctx, path, value.(map[interface{}]interface{}))
+		routeConfig.Routes = append(routeConfig.Routes, pathConfigs...)
 	}
 	return &CustomDomain{
 		RouteConfig:  routeConfig,
@@ -491,18 +494,36 @@ func parseCustomDomain(ctx *ParseContext, resourceName string, values map[interf
 	}
 }
 
-func parsePathConfig(ctx *ParseContext, path string, values map[interface{}]interface{}) *PathConfig {
+func parsePathConfig(ctx *ParseContext, path string, values map[interface{}]interface{}) []*PathConfig {
 	serviceName := values["ServiceName"].(string)
 	serviceName, err := ctx.GetServiceName(serviceName)
 	if err != nil {
 		panic(err)
 	}
 	functionName := values["FunctionName"].(string)
-	return &PathConfig{
-		Path:         path,
-		ServiceName:  serviceName,
-		FunctionName: functionName,
+	var pathConfigs []*PathConfig
+	if ctx.versionedRoute {
+		pathConfigs = append(pathConfigs, &PathConfig{
+			Path:         path,
+			ServiceName:  serviceName,
+			FunctionName: functionName,
+		})
+		versiondedPath := fmt.Sprintf("%s%s", ctx.versionPrefix, path)
+		pathConfigs = append(pathConfigs, &PathConfig{
+			versioned:    true,
+			Path:         versiondedPath,
+			ServiceName:  serviceName,
+			FunctionName: functionName,
+		})
+	} else {
+		pathConfigs = append(pathConfigs, &PathConfig{
+			versioned:    true,
+			Path:         path,
+			ServiceName:  serviceName,
+			FunctionName: functionName,
+		})
 	}
+	return pathConfigs
 }
 
 type ResourceAttribute struct {
