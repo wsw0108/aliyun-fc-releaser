@@ -38,7 +38,6 @@ func main() {
 		templateFile   string
 		releaseVersion string
 		instances      int64
-		versionedRoute bool
 		noProvision    bool
 		stackName      string
 		regionID       string
@@ -54,7 +53,6 @@ func main() {
 	flag.StringVar(&templateFile, "t", "template.yml", "template.yml to use")
 	flag.StringVar(&releaseVersion, "r", "", "release version")
 	flag.Int64Var(&instances, "instances", 1, "number of instances")
-	flag.BoolVar(&versionedRoute, "versioned-route", false, "create versioned route")
 	flag.BoolVar(&noProvision, "no-provision", false, "do not create provision")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
 	flag.StringVar(&regionID, "region", "", "region name, default value will be extracted from endpoint")
@@ -215,7 +213,7 @@ func main() {
 				}
 				fmt.Println("UpdateCustomDomain", updateCustomDomainOutput)
 			}
-			if !noProvision && prevQualifier == "" {
+			if !noProvision && !parseCtx.snapshot {
 				if err = CreateProvisionConfig(parseCtx, serviceName, aliasName, functionName, instances); err != nil {
 					log.Fatalln("CreateProvisionConfig", err)
 				}
@@ -258,7 +256,7 @@ func main() {
 					log.Fatalln(err)
 				}
 			}
-			if !noProvision && prevQualifier == "" {
+			if !noProvision && !parseCtx.snapshot {
 				for _, service := range services {
 					for _, function := range service.Functions {
 						if err = CreateProvisionConfig(parseCtx, service.Name, aliasName, function.Name, instances); err != nil {
