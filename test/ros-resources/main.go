@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	openapi "github.com/alibabacloud-go/darabonba-openapi/client"
+	rosv2 "github.com/alibabacloud-go/ros-20190910/v2/client"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ros"
 	"github.com/denverdino/aliyungo/common"
 	ros2 "github.com/denverdino/aliyungo/ros"
@@ -132,6 +134,50 @@ func main() {
 		}
 	}
 	fmt.Println()
+
+	fmt.Println(strings.Repeat("-", 50))
+	rosClientV2, err := rosv2.NewClient(&openapi.Config{
+		AccessKeyId:     &config.AccessKeyID,
+		AccessKeySecret: &config.AccessKeySecret,
+		RegionId:        &regionID,
+	})
+	{
+		req := &rosv2.ListStacksRequest{
+			StackName: []*string{&stackName},
+			RegionId:  &regionID,
+		}
+		resp, err := rosClientV2.ListStacks(req)
+		if err != nil {
+			log.Fatalln("rosClientV2, ListStacks", err)
+		}
+		fmt.Println("rosClientV2, ListStacks", resp)
+		stackID = *resp.Body.Stacks[0].StackId
+	}
+	{
+		req := &rosv2.GetStackRequest{
+			StackId:  &stackID,
+			RegionId: &regionID,
+		}
+		resp, err := rosClientV2.GetStack(req)
+		if err != nil {
+			log.Fatalln("rosClientV2, GetStack", err)
+		}
+		fmt.Println("rosClientV2, GetStack", resp)
+	}
+	if resourceName != "" {
+		show := true
+		req := &rosv2.GetStackResourceRequest{
+			StackId:                &stackID,
+			RegionId:               &regionID,
+			ShowResourceAttributes: &show,
+			LogicalResourceId:      &resourceName,
+		}
+		resp, err := rosClientV2.GetStackResource(req)
+		if err != nil {
+			log.Fatalln("rosClientV2, GetStackResource", err)
+		}
+		fmt.Println("rosClientV2, GetStackResource", resp)
+	}
 
 	fmt.Println(strings.Repeat("-", 50))
 	// APIVersion 2019-09-10
