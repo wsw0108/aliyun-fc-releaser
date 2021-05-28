@@ -7,14 +7,18 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/client"
 	rosv2 "github.com/alibabacloud-go/ros-20190910/v2/client"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ros"
+	"github.com/aliyun/fc-go-sdk"
 	"github.com/denverdino/aliyungo/common"
 	ros2 "github.com/denverdino/aliyungo/ros"
 	"github.com/denverdino/aliyungo/ros/standard"
+	"github.com/wsw0108/aliyun-fc-releaser/internal/types"
 	"gopkg.in/yaml.v2"
 )
 
@@ -27,6 +31,33 @@ type Config struct {
 	Debug           bool   `yaml:"debug"`
 	Timeout         int    `yaml:"timeout"`
 	Retries         int    `yaml:"retries"`
+}
+
+type triggerSort struct {
+	Name       string
+	Qualifier  string
+	CreateTime time.Time
+	ModifyTime time.Time
+}
+
+type triggerSortSlice []triggerSort
+
+func (tss triggerSortSlice) Len() int {
+	return len(tss)
+}
+
+func (tss triggerSortSlice) Less(i, j int) bool {
+	if tss[i].ModifyTime.Before(tss[j].ModifyTime) {
+		return true
+	}
+	if tss[i].ModifyTime.After(tss[j].ModifyTime) {
+		return false
+	}
+	return tss[i].CreateTime.Before(tss[j].CreateTime)
+}
+
+func (tss triggerSortSlice) Swap(i, j int) {
+	tss[i], tss[j] = tss[j], tss[i]
 }
 
 func main() {
@@ -61,6 +92,34 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	fcClient, err := fc.NewClient(config.Endpoint, config.ApiVersion, config.AccessKeyID, config.AccessKeySecret)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	listTriggerInput := fc.NewListTriggersInput(serviceName, functionName)
+	listTriggerOutput, err := fcClient.ListTriggers(listTriggerInput)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	fmt.Println(listTriggerOutput)
+	var triggers types.Triggers
+	for _, trigger := range listTriggerOutput.Triggers {
+		createTime, _ := time.Parse(types.TimeLayout, *trigger.CreatedTime)
+		modifyTime, _ := time.Parse(types.TimeLayout, *trigger.LastModifiedTime)
+		ts := types.Trigger{
+			Name:       *trigger.TriggerName,
+			CreateTime: createTime,
+			ModifyTime: modifyTime,
+		}
+		if trigger.Qualifier != nil {
+			ts.Qualifier = *trigger.Qualifier
+		}
+		triggers = append(triggers, ts)
+	}
+	sort.Sort(triggers)
+	fmt.Println(triggers)
 
 	if stackName == "" {
 		return

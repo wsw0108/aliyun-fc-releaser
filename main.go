@@ -7,12 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aliyun/fc-go-sdk"
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/ros/standard"
+	"github.com/wsw0108/aliyun-fc-releaser/internal/types"
 	"gopkg.in/yaml.v2"
 )
 
@@ -114,7 +117,7 @@ func main() {
 	versionPrefix := "/" + parts[0]
 
 	parseCtx := &ParseContext{
-		fcClien: fcClient,
+		fcClient: fcClient,
 
 		ROSClient: rosClient,
 		StackName: stackName,
@@ -126,7 +129,7 @@ func main() {
 
 	{
 		if serviceName != "" && functionName != "" {
-			if _, err = PublishAndCreateAlias(fcClient, serviceName, releaseVersion, aliasName); err != nil {
+			if _, err = PublishAndCreateAlias(parseCtx, serviceName, releaseVersion, aliasName); err != nil {
 				log.Fatalln("CreateAlias", err)
 			}
 			listTriggerInput := fc.NewListTriggersInput(serviceName, functionName)
@@ -154,7 +157,7 @@ func main() {
 					AuthType: *fcHttpTrigger.AuthType,
 					Methods:  fcHttpTrigger.Methods,
 				}
-				if err = CreateHttpTrigger(fcClient, serviceName, functionName, httpTrigger, releaseVersion, aliasName); err != nil {
+				if err = CreateHttpTrigger(parseCtx, serviceName, functionName, httpTrigger, releaseVersion, aliasName); err != nil {
 					log.Fatalln("CreateTrigger", err)
 				}
 				triggerCreated = true
@@ -230,19 +233,19 @@ func main() {
 				}
 			}
 			for _, service := range services {
-				if _, err = PublishAndCreateAlias(fcClient, service.Name, releaseVersion, aliasName); err != nil {
+				if _, err = PublishAndCreateAlias(parseCtx, service.Name, releaseVersion, aliasName); err != nil {
 					log.Fatalln(err)
 				}
 				for _, function := range service.Functions {
 					for _, trigger := range function.Triggers {
-						if err = CreateHttpTrigger(fcClient, service.Name, function.Name, trigger, releaseVersion, aliasName); err != nil {
+						if err = CreateHttpTrigger(parseCtx, service.Name, function.Name, trigger, releaseVersion, aliasName); err != nil {
 							log.Fatalln(err)
 						}
 					}
 				}
 			}
 			for _, customDomain := range customDomains {
-				if err = UpdateCustomDomain(fcClient, customDomain, aliasName); err != nil {
+				if err = UpdateCustomDomain(parseCtx, customDomain, aliasName); err != nil {
 					log.Fatalln(err)
 				}
 			}
@@ -259,10 +262,10 @@ func main() {
 	}
 }
 
-func PublishAndCreateAlias(client *fc.Client, serviceName string, releaseVersion string, aliasName string) (string, error) {
+func PublishAndCreateAlias(ctx *ParseContext, serviceName string, releaseVersion string, aliasName string) (string, error) {
 	publishServiceVersionInput := fc.NewPublishServiceVersionInput(serviceName)
 	publishServiceVersionInput.WithDescription(releaseVersion)
-	publishServiceVersionOutput, err := client.PublishServiceVersion(publishServiceVersionInput)
+	publishServiceVersionOutput, err := ctx.fcClient.PublishServiceVersion(publishServiceVersionInput)
 	// NOTE: "can not publish version for service 'xxx', detail: 'No changes were made since last publish'"
 	if err != nil {
 		return "", err
@@ -271,15 +274,48 @@ func PublishAndCreateAlias(client *fc.Client, serviceName string, releaseVersion
 	createAliasInput.WithVersionID(*publishServiceVersionOutput.VersionID)
 	createAliasInput.WithAliasName(aliasName)
 	createAliasInput.WithDescription(releaseVersion)
-	createAliasOutput, err := client.CreateAlias(createAliasInput)
+	createAliasOutput, err := ctx.fcClient.CreateAlias(createAliasInput)
 	if err != nil {
 		return "", err
 	}
+	// TODO: 同时创建相应的ROS资源？
 	return *createAliasOutput.VersionID, nil
 }
 
-func CreateHttpTrigger(client *fc.Client, serviceName string, functionName string, trigger *HttpTrigger, releaseVersion string, qualifier string) error {
-	// FIXME: 一个函数下最多创建10个触发器
+func CreateHttpTrigger(ctx *ParseContext, serviceName string, functionName string, trigger *HttpTrigger, releaseVersion string, qualifier string) error {
+	listTriggerInput := fc.NewListTriggersInput(serviceName, functionName)
+	listTriggerOutput, err := ctx.fcClient.ListTriggers(listTriggerInput)
+	if err != nil {
+		return err
+	}
+	if len(listTriggerOutput.Triggers) >= types.MaxTriggers {
+		var triggers types.Triggers
+		for _, trigger := range listTriggerOutput.Triggers {
+			createTime, _ := time.Parse(types.TimeLayout, *trigger.CreatedTime)
+			modifyTime, _ := time.Parse(types.TimeLayout, *trigger.LastModifiedTime)
+			tt := types.Trigger{
+				CreateTime: createTime,
+				ModifyTime: modifyTime,
+				Name:       *trigger.TriggerName,
+			}
+			if trigger.Qualifier != nil {
+				tt.Qualifier = *trigger.Qualifier
+			}
+			triggers = append(triggers, tt)
+		}
+		sort.Sort(triggers)
+		triggersToDelete := triggers[:(len(triggers) - (types.MaxTriggers - 1))]
+		for _, trigger := range triggersToDelete {
+			deleteTriggerInput := fc.NewDeleteTriggerInput(serviceName, functionName, trigger.Name)
+			_, err = ctx.fcClient.DeleteTrigger(deleteTriggerInput)
+			if err != nil {
+				return err
+			}
+			if trigger.Qualifier != "" && trigger.Qualifier != "LATEST" {
+				// TODO: remove resources(route/alias/version) related to qualifier?
+			}
+		}
+	}
 	createTriggerInput := fc.NewCreateTriggerInput(serviceName, functionName)
 	// NOTE: 一个版本qualifier只能创建一个触发器
 	createTriggerInput.WithQualifier(qualifier)
@@ -291,11 +327,12 @@ func CreateHttpTrigger(client *fc.Client, serviceName string, functionName strin
 	triggerConfig.WithMethods(trigger.Methods...)
 	createTriggerInput.WithTriggerConfig(triggerConfig)
 	createTriggerInput.WithDescription(releaseVersion)
-	_, err := client.CreateTrigger(createTriggerInput)
+	_, err = ctx.fcClient.CreateTrigger(createTriggerInput)
+	// TODO: 同时创建相应的ROS资源？
 	return err
 }
 
-func UpdateCustomDomain(client *fc.Client, customDomain *CustomDomain, qualifier string) error {
+func UpdateCustomDomain(ctx *ParseContext, customDomain *CustomDomain, qualifier string) error {
 	updateCustomDomainInput := fc.NewUpdateCustomDomainInput(customDomain.DomainName)
 	updateCustomDomainInput.WithProtocol(customDomain.Protocol)
 	routeConfig := fc.NewRouteConfig()
@@ -310,12 +347,7 @@ func UpdateCustomDomain(client *fc.Client, customDomain *CustomDomain, qualifier
 		routeConfig.Routes = append(routeConfig.Routes, fcPathConfig)
 	}
 	updateCustomDomainInput.WithRouteConfig(routeConfig)
-	// if customDomain.CertConfig != nil {
-	// 	if customDomain.CertConfig.CertName != nil || customDomain.CertConfig.Certificate != nil || customDomain.CertConfig.PrivateKey != nil {
-	// 		updateCustomDomainInput.CertConfig = customDomain.CertConfig
-	// 	}
-	// }
-	_, err := client.UpdateCustomDomain(updateCustomDomainInput)
+	_, err := ctx.fcClient.UpdateCustomDomain(updateCustomDomainInput)
 	return err
 }
 
@@ -324,6 +356,7 @@ func CreateProvisionConfig(client *fc.Client, serviceName string, qualifier stri
 	putProvisionConfigInput := fc.NewPutProvisionConfigInput(serviceName, qualifier, functionName)
 	putProvisionConfigInput.WithTarget(targetInstances)
 	_, err := client.PutProvisionConfig(putProvisionConfigInput)
+	// TODO: 同时创建相应ROS资源
 	return err
 }
 
@@ -344,7 +377,7 @@ type Service struct {
 }
 
 type ParseContext struct {
-	fcClien *fc.Client
+	fcClient *fc.Client
 
 	ROSClient *standard.Client
 	StackName string
@@ -504,7 +537,7 @@ func parseCustomDomain(ctx *ParseContext, resourceName string, values map[interf
 			}
 			functionName := props["FunctionName"].(string)
 			req := fc.NewListCustomDomainsInput()
-			resp, err := ctx.fcClien.ListCustomDomains(req)
+			resp, err := ctx.fcClient.ListCustomDomains(req)
 			if err != nil {
 				log.Fatalln(err)
 			}
