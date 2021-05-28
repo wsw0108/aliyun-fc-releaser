@@ -121,6 +121,17 @@ func main() {
 	sort.Sort(triggers)
 	fmt.Println(triggers)
 
+	listCustomDomainInput := fc.NewListCustomDomainsInput()
+	listCustomDomainOutput, err := fcClient.ListCustomDomains(listCustomDomainInput)
+	for _, d := range listCustomDomainOutput.CustomDomains {
+		if !strings.HasSuffix(*d.DomainName, "test.functioncompute.com") {
+			continue
+		}
+		for _, route := range d.RouteConfig.Routes {
+			fmt.Println(*route.Path, *route.ServiceName, *route.FunctionName, route.Qualifier)
+		}
+	}
+
 	if stackName == "" {
 		return
 	}
