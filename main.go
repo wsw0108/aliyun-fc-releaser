@@ -108,6 +108,14 @@ func main() {
 		rosClient = standard.NewROSClient(config.AccessKeyID, config.AccessKeySecret, common.Region(regionID))
 	}
 
+	parseCtx := &ParseContext{
+		fcClient: fcClient,
+
+		ROSClient: rosClient,
+		StackName: stackName,
+		RegionID:  regionID,
+	}
+
 	// NOTE: 1.2.3/v1.2.3 -> v1_2_3, （字母开头，字母数字下划线中划线）
 	ver := semver.MustParse(releaseVersion)
 	var aliasName string
@@ -115,23 +123,10 @@ func main() {
 	if aliasName[0] != 'v' {
 		aliasName = "v" + aliasName
 	}
-	var prevQualifier string
-	if len(ver.Pre) == 0 {
-		aliasName = "rel_" + aliasName
-	} else {
-		aliasName = "pre_" + aliasName
-		prevQualifier = fmt.Sprintf("rel_v%d_%d_%d", ver.Major, ver.Minor, ver.Patch)
-	}
-
-	parseCtx := &ParseContext{
-		fcClient: fcClient,
-
-		ROSClient: rosClient,
-		StackName: stackName,
-		RegionID:  regionID,
-
-		snapshot:      prevQualifier != "",
-		prevQualifier: prevQualifier,
+	if len(ver.Pre) > 0 {
+		aliasName = aliasName + "-pre"
+		parseCtx.snapshot = true
+		parseCtx.prevQualifier = fmt.Sprintf("v%d_%d_%d", ver.Major, ver.Minor, ver.Patch)
 	}
 
 	{
@@ -357,7 +352,8 @@ func UpdateCustomDomain(ctx *ParseContext, customDomain *CustomDomain, qualifier
 	routeConfig := fc.NewRouteConfig()
 	// TODO: 最多只保留固定数量的Routes（依限制而定）
 	for _, route := range routeConfigToUpdate.Routes {
-		if route.Qualifier == nil {
+		// FIXME: 需要弄清楚fun deploy对路由的影响
+		if route.Qualifier == nil || *route.Qualifier == "" || *route.Qualifier == "LATEST" {
 			if ctx.snapshot {
 				newRoute := fc.PathConfig{}
 				prefix := "/" + qualifier
@@ -371,6 +367,7 @@ func UpdateCustomDomain(ctx *ParseContext, customDomain *CustomDomain, qualifier
 			}
 			// qualify route that overrided by `fun deploy`
 			if ctx.snapshot {
+				// FIXME: prevQualifier不存在的话不需要也不能加
 				route.WithQualifier(ctx.prevQualifier)
 			} else {
 				route.WithQualifier(qualifier)
