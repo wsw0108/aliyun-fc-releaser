@@ -352,25 +352,29 @@ func UpdateCustomDomain(ctx *ParseContext, customDomain *CustomDomain, qualifier
 	routeConfig := fc.NewRouteConfig()
 	// TODO: 最多只保留固定数量的Routes（依限制而定）
 	for _, route := range routeConfigToUpdate.Routes {
-		// FIXME: 需要弄清楚fun deploy对路由的影响
-		if route.Qualifier == nil || *route.Qualifier == "" || *route.Qualifier == "LATEST" {
-			if ctx.snapshot {
-				newRoute := fc.PathConfig{}
-				prefix := "/" + qualifier
-				path := prefix + *route.Path
-				newRoute.Path = &path
-				newRoute.ServiceName = route.ServiceName
-				newRoute.FunctionName = route.FunctionName
-				newRoute.Qualifier = &qualifier
-				newRoute.Methods = route.Methods
-				routeConfig.Routes = append(routeConfig.Routes, newRoute)
-			}
-			// qualify route that overrided by `fun deploy`
-			if ctx.snapshot {
-				// FIXME: prevQualifier不存在的话不需要也不能加
-				route.WithQualifier(ctx.prevQualifier)
-			} else {
-				route.WithQualifier(qualifier)
+		// 非ROS，fun deploy直接用template中的覆盖
+		// ROS，fun deploy不改变路由设置
+		if ctx.snapshot {
+			newRoute := fc.PathConfig{}
+			prefix := "/" + qualifier
+			path := prefix + *route.Path
+			newRoute.Path = &path
+			newRoute.ServiceName = route.ServiceName
+			newRoute.FunctionName = route.FunctionName
+			newRoute.Qualifier = &qualifier
+			newRoute.Methods = route.Methods
+			routeConfig.Routes = append(routeConfig.Routes, newRoute)
+		}
+		// qualify route that overridden by `fun deploy`
+		if ctx.snapshot {
+			// FIXME: prevQualifier不存在的话不需要加（能够添加）
+			route.WithQualifier(ctx.prevQualifier)
+		} else {
+			for _, froute := range customDomain.RouteConfig.Routes {
+				if *route.Path == froute.Path && *route.ServiceName == froute.ServiceName && *route.FunctionName == froute.FunctionName {
+					route.WithQualifier(qualifier)
+					break
+				}
 			}
 		}
 		routeConfig.Routes = append(routeConfig.Routes, route)
