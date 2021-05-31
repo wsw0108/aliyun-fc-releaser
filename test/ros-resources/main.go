@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -31,33 +32,6 @@ type Config struct {
 	Debug           bool   `yaml:"debug"`
 	Timeout         int    `yaml:"timeout"`
 	Retries         int    `yaml:"retries"`
-}
-
-type triggerSort struct {
-	Name       string
-	Qualifier  string
-	CreateTime time.Time
-	ModifyTime time.Time
-}
-
-type triggerSortSlice []triggerSort
-
-func (tss triggerSortSlice) Len() int {
-	return len(tss)
-}
-
-func (tss triggerSortSlice) Less(i, j int) bool {
-	if tss[i].ModifyTime.Before(tss[j].ModifyTime) {
-		return true
-	}
-	if tss[i].ModifyTime.After(tss[j].ModifyTime) {
-		return false
-	}
-	return tss[i].CreateTime.Before(tss[j].CreateTime)
-}
-
-func (tss triggerSortSlice) Swap(i, j int) {
-	tss[i], tss[j] = tss[j], tss[i]
 }
 
 func main() {
@@ -129,6 +103,27 @@ func main() {
 		}
 		for _, route := range d.RouteConfig.Routes {
 			fmt.Println(*route.Path, *route.ServiceName, *route.FunctionName, route.Qualifier)
+		}
+	}
+
+	listProvisionConfigsInput := fc.NewListProvisionConfigsInput()
+	listProvisionConfigsOutput, err := fcClient.ListProvisionConfigs(listProvisionConfigsInput)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	resourcePattern := fmt.Sprintf("^.*#%s#(.+)#%s$", serviceName, functionName)
+	resourceRegex := regexp.MustCompile(resourcePattern)
+	for _, pc := range listProvisionConfigsOutput.ProvisionConfigs {
+		if pc.Resource == nil || pc.Current == nil || pc.Target == nil {
+			continue
+		}
+		matches := resourceRegex.FindStringSubmatch(*pc.Resource)
+		fmt.Println(len(matches))
+		if len(matches) > 1 {
+			fmt.Println("pc", *pc.Resource, *pc.Target, *pc.Current, matches[1])
+		}
+		if resourceRegex.MatchString(*pc.Resource) {
+			fmt.Println("pc", *pc.Resource, *pc.Target, *pc.Current)
 		}
 	}
 
@@ -260,7 +255,6 @@ func main() {
 		if err != nil {
 			log.Fatalln(err)
 		}
-		// FIXME: ListStacks does not filter out stacks by specified stackName
 		var found bool
 		for _, stack := range resp.Stacks {
 			if stack.StackName == stackName {

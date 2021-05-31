@@ -17,6 +17,7 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/ros/standard"
+	"github.com/wsw0108/aliyun-fc-releaser/internal/serverless"
 	"github.com/wsw0108/aliyun-fc-releaser/internal/types"
 	"gopkg.in/yaml.v2"
 )
@@ -41,8 +42,6 @@ func main() {
 		noProvision    bool
 		stackName      string
 		regionID       string
-		serviceName    string
-		functionName   string
 	)
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -56,8 +55,6 @@ func main() {
 	flag.BoolVar(&noProvision, "no-provision", false, "do not create provision")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
 	flag.StringVar(&regionID, "region", "", "region name, default value will be extracted from endpoint")
-	flag.StringVar(&serviceName, "service-name", "", "service name")
-	flag.StringVar(&functionName, "function-name", "", "function name")
 	flag.Parse()
 
 	var config Config
@@ -87,7 +84,7 @@ func main() {
 		releaseVersion = releaseVersion[1:]
 	}
 
-	var template map[string]interface{}
+	var template serverless.Template
 	tf, err := os.Open(templateFile)
 	if err != nil {
 		log.Fatalln(err)
@@ -98,22 +95,18 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	fcClient, err := fc.NewClient(config.Endpoint, config.ApiVersion, config.AccessKeyID, config.AccessKeySecret)
+	ctx := &Context{
+		stackName: stackName,
+		regionID:  regionID,
+	}
+
+	ctx.fcClient, err = fc.NewClient(config.Endpoint, config.ApiVersion, config.AccessKeyID, config.AccessKeySecret)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	var rosClient *standard.Client
 	if stackName != "" {
-		rosClient = standard.NewROSClient(config.AccessKeyID, config.AccessKeySecret, common.Region(regionID))
-	}
-
-	parseCtx := &ParseContext{
-		fcClient: fcClient,
-
-		ROSClient: rosClient,
-		StackName: stackName,
-		RegionID:  regionID,
+		ctx.rosClient = standard.NewROSClient(config.AccessKeyID, config.AccessKeySecret, common.Region(regionID))
 	}
 
 	// NOTE: 1.2.3/v1.2.3 -> v1_2_3, （字母开头，字母数字下划线中划线）
@@ -125,146 +118,42 @@ func main() {
 	}
 	if len(ver.Pre) > 0 {
 		aliasName = aliasName + "-pre"
-		parseCtx.snapshot = true
-		parseCtx.prevQualifier = fmt.Sprintf("v%d_%d_%d", ver.Major, ver.Minor, ver.Patch)
+		ctx.snapshot = true
+		ctx.prevQualifier = fmt.Sprintf("v%d_%d_%d", ver.Major, ver.Minor, ver.Patch)
 	}
 
-	{
-		if serviceName != "" && functionName != "" {
-			if _, err = PublishAndCreateAlias(parseCtx, serviceName, releaseVersion, aliasName); err != nil {
-				log.Fatalln("CreateAlias", err)
-			}
-			listTriggerInput := fc.NewListTriggersInput(serviceName, functionName)
-			listTriggerOutput, err := fcClient.ListTriggers(listTriggerInput)
-			if err != nil {
-				log.Fatalln("ListTriggers", err)
-			}
-			fmt.Println("ListTrigger", listTriggerOutput)
-			var triggerCreated bool
-			for _, trigger := range listTriggerOutput.Triggers {
-				if trigger.TriggerType == nil || trigger.TriggerConfig == nil {
+	for _, service := range template.Services {
+		if _, err = PublishAndCreateAlias(ctx, service.Name, releaseVersion, aliasName); err != nil {
+			log.Fatalln(err)
+		}
+		for _, function := range service.Functions {
+			for _, trigger := range function.Triggers {
+				if trigger.Type != "HTTP" {
 					continue
 				}
-				triggerType := *trigger.TriggerType
-				if !strings.EqualFold(triggerType, "http") {
-					continue
-				}
-				if trigger.Qualifier != nil {
-					continue
-				}
-				fcHttpTrigger := trigger.TriggerConfig.(*fc.HTTPTriggerConfig)
-				triggerName := fmt.Sprintf("%s-%s", *trigger.TriggerName, aliasName)
-				httpTrigger := &HttpTrigger{
-					Name:     triggerName,
-					AuthType: *fcHttpTrigger.AuthType,
-					Methods:  fcHttpTrigger.Methods,
-				}
-				if err = CreateHttpTrigger(parseCtx, serviceName, functionName, httpTrigger, releaseVersion, aliasName); err != nil {
-					log.Fatalln("CreateTrigger", err)
-				}
-				triggerCreated = true
-			}
-			if !triggerCreated {
-				return
-			}
-			listCustomDomainInput := fc.NewListCustomDomainsInput()
-			listCustomDomainOutput, err := fcClient.ListCustomDomains(listCustomDomainInput)
-			fmt.Println("ListCustomDomain", listCustomDomainOutput)
-			for _, customDomain := range listCustomDomainOutput.CustomDomains {
-				if customDomain.RouteConfig == nil || len(customDomain.RouteConfig.Routes) == 0 {
-					continue
-				}
-				fmt.Println("CustomDomain", customDomain)
-				routeConfig := fc.NewRouteConfig()
-				var hasMatch bool
-				for _, route := range customDomain.RouteConfig.Routes {
-					if *route.ServiceName == serviceName && *route.FunctionName == functionName {
-						hasMatch = true
-						pathConfig := fc.PathConfig{}
-						pathConfig.Path = route.Path
-						pathConfig.ServiceName = route.ServiceName
-						pathConfig.FunctionName = route.FunctionName
-						pathConfig.Methods = route.Methods
-						pathConfig.Qualifier = &aliasName
-						routeConfig.Routes = append(routeConfig.Routes, pathConfig)
-					}
-				}
-				if !hasMatch {
-					fmt.Println("no match service/function", *customDomain.DomainName)
-					continue
-				}
-				updateCustomDomainInput := fc.NewUpdateCustomDomainInput(*customDomain.DomainName)
-				updateCustomDomainInput.Protocol = customDomain.Protocol
-				updateCustomDomainInput.RouteConfig = routeConfig
-				if customDomain.CertConfig != nil {
-					if customDomain.CertConfig.CertName != nil || customDomain.CertConfig.Certificate != nil || customDomain.CertConfig.PrivateKey != nil {
-						updateCustomDomainInput.CertConfig = customDomain.CertConfig
-					}
-				}
-				fmt.Println("updateCustomDomainInput", updateCustomDomainInput)
-				updateCustomDomainOutput, err := fcClient.UpdateCustomDomain(updateCustomDomainInput)
-				if err != nil {
-					log.Fatalln("UpdateCustomDomain", err)
-				}
-				fmt.Println("UpdateCustomDomain", updateCustomDomainOutput)
-			}
-			if !noProvision && !parseCtx.snapshot {
-				if err = CreateProvisionConfig(parseCtx, serviceName, aliasName, functionName, instances); err != nil {
-					log.Fatalln("CreateProvisionConfig", err)
-				}
-			}
-		} else {
-			resources := template["Resources"].(map[interface{}]interface{})
-			var services []*Service
-			var customDomains []*CustomDomain
-			for key, value := range resources {
-				name := key.(string)
-				if props, ok := value.(map[interface{}]interface{}); ok {
-					typV := props["Type"]
-					if typV == nil {
-						continue
-					}
-					typ := typV.(string)
-					if typ == "Aliyun::Serverless::Service" {
-						service := parseService(parseCtx, name, props)
-						services = append(services, service)
-					} else if typ == "Aliyun::Serverless::CustomDomain" {
-						customDomain := parseCustomDomain(parseCtx, name, props)
-						customDomains = append(customDomains, customDomain)
-					}
-				}
-			}
-			for _, service := range services {
-				if _, err = PublishAndCreateAlias(parseCtx, service.Name, releaseVersion, aliasName); err != nil {
-					log.Fatalln(err)
-				}
-				for _, function := range service.Functions {
-					for _, trigger := range function.Triggers {
-						if err = CreateHttpTrigger(parseCtx, service.Name, function.Name, trigger, releaseVersion, aliasName); err != nil {
-							log.Fatalln(err)
-						}
-					}
-				}
-			}
-			for _, customDomain := range customDomains {
-				if err = UpdateCustomDomain(parseCtx, customDomain, aliasName); err != nil {
+				if err = CreateHttpTrigger(ctx, service.Name, function.Name, trigger, releaseVersion, aliasName); err != nil {
 					log.Fatalln(err)
 				}
 			}
-			if !noProvision && !parseCtx.snapshot {
-				for _, service := range services {
-					for _, function := range service.Functions {
-						if err = CreateProvisionConfig(parseCtx, service.Name, aliasName, function.Name, instances); err != nil {
-							log.Fatalln(err)
-						}
-					}
+		}
+	}
+	for _, customDomain := range template.CustomDomains {
+		if err = UpdateCustomDomain(ctx, customDomain, aliasName); err != nil {
+			log.Fatalln(err)
+		}
+	}
+	if !noProvision && !ctx.snapshot {
+		for _, service := range template.Services {
+			for _, function := range service.Functions {
+				if err = CreateProvisionConfig(ctx, service.Name, aliasName, function.Name, instances); err != nil {
+					log.Fatalln(err)
 				}
 			}
 		}
 	}
 }
 
-func PublishAndCreateAlias(ctx *ParseContext, serviceName string, releaseVersion string, aliasName string) (string, error) {
+func PublishAndCreateAlias(ctx *Context, serviceName string, releaseVersion string, aliasName string) (string, error) {
 	publishServiceVersionInput := fc.NewPublishServiceVersionInput(serviceName)
 	publishServiceVersionInput.WithDescription(releaseVersion)
 	publishServiceVersionOutput, err := ctx.fcClient.PublishServiceVersion(publishServiceVersionInput)
@@ -284,7 +173,7 @@ func PublishAndCreateAlias(ctx *ParseContext, serviceName string, releaseVersion
 	return *createAliasOutput.VersionID, nil
 }
 
-func CreateHttpTrigger(ctx *ParseContext, serviceName string, functionName string, trigger *HttpTrigger, releaseVersion string, qualifier string) error {
+func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, trigger serverless.Trigger, releaseVersion string, qualifier string) error {
 	listTriggerInput := fc.NewListTriggersInput(serviceName, functionName)
 	listTriggerOutput, err := ctx.fcClient.ListTriggers(listTriggerInput)
 	if err != nil {
@@ -292,28 +181,28 @@ func CreateHttpTrigger(ctx *ParseContext, serviceName string, functionName strin
 	}
 	if len(listTriggerOutput.Triggers) >= types.MaxTriggers {
 		var triggers types.Triggers
-		for _, trigger := range listTriggerOutput.Triggers {
-			createTime, _ := time.Parse(types.TimeLayout, *trigger.CreatedTime)
-			modifyTime, _ := time.Parse(types.TimeLayout, *trigger.LastModifiedTime)
+		for _, tm := range listTriggerOutput.Triggers {
+			createTime, _ := time.Parse(types.TimeLayout, *tm.CreatedTime)
+			modifyTime, _ := time.Parse(types.TimeLayout, *tm.LastModifiedTime)
 			tt := types.Trigger{
 				CreateTime: createTime,
 				ModifyTime: modifyTime,
-				Name:       *trigger.TriggerName,
+				Name:       *tm.TriggerName,
 			}
-			if trigger.Qualifier != nil {
-				tt.Qualifier = *trigger.Qualifier
+			if tm.Qualifier != nil {
+				tt.Qualifier = *tm.Qualifier
 			}
 			triggers = append(triggers, tt)
 		}
 		sort.Sort(triggers)
 		triggersToDelete := triggers[:(len(triggers) - (types.MaxTriggers - 1))]
-		for _, trigger := range triggersToDelete {
-			deleteTriggerInput := fc.NewDeleteTriggerInput(serviceName, functionName, trigger.Name)
+		for _, td := range triggersToDelete {
+			deleteTriggerInput := fc.NewDeleteTriggerInput(serviceName, functionName, td.Name)
 			_, err = ctx.fcClient.DeleteTrigger(deleteTriggerInput)
 			if err != nil {
 				return err
 			}
-			if trigger.Qualifier != "" && trigger.Qualifier != "LATEST" {
+			if td.Qualifier != "" && td.Qualifier != "LATEST" {
 				// TODO: remove resources(route/alias/version) related to qualifier?
 			}
 		}
@@ -325,8 +214,8 @@ func CreateHttpTrigger(ctx *ParseContext, serviceName string, functionName strin
 	createTriggerInput.WithTriggerName(triggerName)
 	createTriggerInput.WithTriggerType("http")
 	triggerConfig := fc.NewHTTPTriggerConfig()
-	triggerConfig.WithAuthType(trigger.AuthType)
-	triggerConfig.WithMethods(trigger.Methods...)
+	triggerConfig.WithAuthType(trigger.HTTP.AuthType)
+	triggerConfig.WithMethods(trigger.HTTP.Methods...)
 	createTriggerInput.WithTriggerConfig(triggerConfig)
 	createTriggerInput.WithDescription(releaseVersion)
 	_, err = ctx.fcClient.CreateTrigger(createTriggerInput)
@@ -334,7 +223,7 @@ func CreateHttpTrigger(ctx *ParseContext, serviceName string, functionName strin
 	return err
 }
 
-func UpdateCustomDomain(ctx *ParseContext, customDomain *CustomDomain, qualifier string) error {
+func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qualifier string) error {
 	listCustomDomainInput := fc.NewListCustomDomainsInput()
 	listCustomDomainOutput, err := ctx.fcClient.ListCustomDomains(listCustomDomainInput)
 	var routeConfigToUpdate *fc.RouteConfig
@@ -384,37 +273,52 @@ func UpdateCustomDomain(ctx *ParseContext, customDomain *CustomDomain, qualifier
 	return err
 }
 
-func CreateProvisionConfig(ctx *ParseContext, serviceName string, qualifier string, functionName string, targetInstances int64) error {
-	// TODO: 删除以前的版本的预留资源设置？
+func CreateProvisionConfig(ctx *Context, serviceName string, qualifier string, functionName string, targetInstances int64) error {
+	listProvisionConfigsInput := fc.NewListProvisionConfigsInput()
+	listProvisionConfigsOutput, err := ctx.fcClient.ListProvisionConfigs(listProvisionConfigsInput)
+	if err != nil {
+		return err
+	}
 	putProvisionConfigInput := fc.NewPutProvisionConfigInput(serviceName, qualifier, functionName)
 	putProvisionConfigInput.WithTarget(targetInstances)
-	_, err := ctx.fcClient.PutProvisionConfig(putProvisionConfigInput)
+	_, err = ctx.fcClient.PutProvisionConfig(putProvisionConfigInput)
+	if err != nil {
+		return err
+	}
 	// TODO: 同时创建相应ROS资源
-	return err
+	resourcePattern := fmt.Sprintf("^.*#%s#(.+)#%s$", serviceName, functionName)
+	resourceRegex := regexp.MustCompile(resourcePattern)
+	var qualifiers []string
+	for _, pc := range listProvisionConfigsOutput.ProvisionConfigs {
+		if pc.Resource == nil || pc.Current == nil || pc.Target == nil {
+			continue
+		}
+		if *pc.Current == 0 && *pc.Target == 0 {
+			continue
+		}
+		matches := resourceRegex.FindStringSubmatch(*pc.Resource)
+		if len(matches) < 2 {
+			continue
+		}
+		qualifiers = append(qualifiers, matches[1])
+	}
+	if len(qualifiers) > 0 {
+		for _, qualifierToUpdate := range qualifiers {
+			updateProvisionConfigInput := fc.NewPutProvisionConfigInput(serviceName, qualifierToUpdate, functionName)
+			updateProvisionConfigInput.WithTarget(0)
+			// ignore error
+			_, _ = ctx.fcClient.PutProvisionConfig(updateProvisionConfigInput)
+		}
+	}
+	return nil
 }
 
-type HttpTrigger struct {
-	Name     string
-	AuthType string
-	Methods  []string
-}
+type Context struct {
+	stackName string
+	regionID  string
 
-type Function struct {
-	Name     string
-	Triggers []*HttpTrigger
-}
-
-type Service struct {
-	Name      string
-	Functions []*Function
-}
-
-type ParseContext struct {
-	fcClient *fc.Client
-
-	ROSClient *standard.Client
-	StackName string
-	RegionID  string
+	fcClient  *fc.Client
+	rosClient *standard.Client
 
 	snapshot      bool
 	prevQualifier string
@@ -423,12 +327,12 @@ type ParseContext struct {
 	stackID string
 }
 
-func (ctx *ParseContext) getStackID() (string, error) {
+func (ctx *Context) getStackID() (string, error) {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 	if ctx.stackID == "" {
-		resp, err := ctx.ROSClient.ListStacks(&standard.ListStacksRequest{
-			StackName: []string{ctx.StackName},
+		resp, err := ctx.rosClient.ListStacks(&standard.ListStacksRequest{
+			StackName: []string{ctx.stackName},
 		})
 		if err != nil {
 			return "", err
@@ -436,21 +340,21 @@ func (ctx *ParseContext) getStackID() (string, error) {
 		// FIXME: ListStacks does not filter out stacks by specified stackName
 		var found bool
 		for _, stack := range resp.Stacks {
-			if stack.StackName == ctx.StackName {
+			if stack.StackName == ctx.stackName {
 				ctx.stackID = stack.StackId
 				found = true
 				break
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("can not get StackID for StackName: %s", ctx.StackName)
+			return "", fmt.Errorf("can not get StackID for StackName: %s", ctx.stackName)
 		}
 	}
 	return ctx.stackID, nil
 }
 
-func (ctx *ParseContext) GetServiceName(serviceName string) (string, error) {
-	if ctx.StackName == "" {
+func (ctx *Context) GetServiceName(serviceName string) (string, error) {
+	if ctx.stackName == "" {
 		return serviceName, nil
 	}
 	ctx.getStackID()
@@ -460,7 +364,7 @@ func (ctx *ParseContext) GetServiceName(serviceName string) (string, error) {
 		ShowResourceAttributes: true,
 	}
 	res := &GetStackResourceResponse{}
-	err := ctx.ROSClient.Invoke("GetStackResource", req, res)
+	err := ctx.rosClient.Invoke("GetStackResource", req, res)
 	if err != nil {
 		return "", err
 	}
@@ -475,144 +379,6 @@ func (ctx *ParseContext) GetServiceName(serviceName string) (string, error) {
 		return "", fmt.Errorf("can not get ROS ServiceName for service %s", serviceName)
 	}
 	return rosServiceName, nil
-}
-
-func parseService(ctx *ParseContext, serviceName string, values map[interface{}]interface{}) *Service {
-	serviceName, err := ctx.GetServiceName(serviceName)
-	if err != nil {
-		panic(err)
-	}
-	var functions []*Function
-	for key, value := range values {
-		functionName := key.(string)
-		if props, ok := value.(map[interface{}]interface{}); ok {
-			typV := props["Type"]
-			if typV == nil {
-				continue
-			}
-			typ := typV.(string)
-			if typ == "Aliyun::Serverless::Function" {
-				function := parseFunction(ctx, functionName, props)
-				functions = append(functions, function)
-			}
-		}
-	}
-	return &Service{
-		Name:      serviceName,
-		Functions: functions,
-	}
-}
-
-func parseFunction(ctx *ParseContext, functionName string, values map[interface{}]interface{}) *Function {
-	var triggers []*HttpTrigger
-	events := values["Events"].(map[interface{}]interface{})
-	for key, value := range events {
-		triggerName := key.(string)
-		props := value.(map[interface{}]interface{})
-		typ := props["Type"].(string)
-		if !strings.EqualFold(typ, "http") {
-			continue
-		}
-		trigger := parseHttpTrigger(ctx, triggerName, props["Properties"].(map[interface{}]interface{}))
-		triggers = append(triggers, trigger)
-	}
-	return &Function{
-		Name:     functionName,
-		Triggers: triggers,
-	}
-}
-
-func parseHttpTrigger(ctx *ParseContext, triggerName string, props map[interface{}]interface{}) *HttpTrigger {
-	authType := props["AuthType"].(string)
-	values := props["Methods"].([]interface{})
-	var methods []string
-	for _, value := range values {
-		methods = append(methods, value.(string))
-	}
-	return &HttpTrigger{
-		Name:     triggerName,
-		AuthType: strings.ToLower(authType),
-		Methods:  methods,
-	}
-}
-
-type RouteConfig struct {
-	Routes []*PathConfig
-}
-
-type PathConfig struct {
-	Path         string
-	ServiceName  string
-	FunctionName string
-}
-
-type CustomDomain struct {
-	ResourceName string
-	DomainName   string
-	Protocol     string
-	RouteConfig  *RouteConfig
-}
-
-func parseCustomDomain(ctx *ParseContext, resourceName string, values map[interface{}]interface{}) *CustomDomain {
-	props := values["Properties"].(map[interface{}]interface{})
-	domainName := props["DomainName"].(string)
-	protocol := props["Protocol"].(string)
-	routeConfigMap := props["RouteConfig"].(map[interface{}]interface{})
-	routesMap := routeConfigMap["Routes"].(map[interface{}]interface{})
-	if domainName == "Auto" {
-		for _, value := range routesMap {
-			props := value.(map[interface{}]interface{})
-			serviceName := props["ServiceName"].(string)
-			serviceName, err := ctx.GetServiceName(serviceName)
-			if err != nil {
-				panic(err)
-			}
-			functionName := props["FunctionName"].(string)
-			req := fc.NewListCustomDomainsInput()
-			resp, err := ctx.fcClient.ListCustomDomains(req)
-			if err != nil {
-				log.Fatalln(err)
-			}
-			for _, customDomain := range resp.CustomDomains {
-				if strings.HasSuffix(*customDomain.DomainName, ".test.functioncompute.com") {
-					for _, route := range customDomain.RouteConfig.Routes {
-						if *route.ServiceName == serviceName && *route.FunctionName == functionName {
-							domainName = *customDomain.DomainName
-						}
-					}
-				}
-			}
-		}
-	}
-	if domainName == "Auto" {
-		panic("can not handle 'DomainName: Auto'")
-	}
-	routeConfig := &RouteConfig{}
-	for key, value := range routesMap {
-		path := key.(string)
-		pathConfig := parsePathConfig(ctx, path, value.(map[interface{}]interface{}))
-		routeConfig.Routes = append(routeConfig.Routes, pathConfig)
-	}
-	return &CustomDomain{
-		RouteConfig:  routeConfig,
-		ResourceName: resourceName,
-		DomainName:   domainName,
-		Protocol:     protocol,
-	}
-}
-
-func parsePathConfig(ctx *ParseContext, path string, values map[interface{}]interface{}) *PathConfig {
-	serviceName := values["ServiceName"].(string)
-	serviceName, err := ctx.GetServiceName(serviceName)
-	if err != nil {
-		panic(err)
-	}
-	functionName := values["FunctionName"].(string)
-	return &PathConfig{
-		Path:         path,
-		ServiceName:  serviceName,
-		FunctionName: functionName,
-	}
 }
 
 type ResourceAttribute struct {
