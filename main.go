@@ -295,20 +295,8 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 		// 非ROS，fun deploy直接用template中的覆盖
 		// ROS，fun deploy不改变路由设置
 		if ctx.snapshot {
-			newRoute := fc.PathConfig{}
-			prefix := "/" + qualifier
-			path := prefix + *route.Path
-			newRoute.Path = &path
-			newRoute.ServiceName = route.ServiceName
-			newRoute.FunctionName = route.FunctionName
-			newRoute.Qualifier = &qualifier
-			newRoute.Methods = route.Methods
-			routeConfig.Routes = append(routeConfig.Routes, newRoute)
-		}
-		// qualify route that overridden by `fun deploy`
-		if ctx.snapshot {
 			// FIXME: prevQualifier不存在的话不需要加（能够添加）
-			route.WithQualifier(ctx.prevQualifier)
+			// route.WithQualifier(ctx.prevQualifier)
 		} else {
 			for _, froute := range customDomain.RouteConfig.Routes {
 				if *route.Path == froute.Path && *route.ServiceName == froute.ServiceName && *route.FunctionName == froute.FunctionName {
@@ -318,6 +306,19 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 			}
 		}
 		routeConfig.Routes = append(routeConfig.Routes, route)
+	}
+	if ctx.snapshot {
+		for _, route := range customDomain.RouteConfig.Routes {
+			newRoute := fc.PathConfig{}
+			prefix := "/" + qualifier
+			path := prefix + route.Path
+			newRoute.Path = &path
+			newRoute.ServiceName = &route.ServiceName
+			newRoute.FunctionName = &route.FunctionName
+			newRoute.Qualifier = &qualifier
+			// newRoute.Methods = route.Methods
+			routeConfig.Routes = append(routeConfig.Routes, newRoute)
+		}
 	}
 	updateCustomDomainInput.WithRouteConfig(routeConfig)
 	_, err = ctx.fcClient.UpdateCustomDomain(updateCustomDomainInput)
