@@ -122,7 +122,58 @@ func main() {
 		ctx.prevQualifier = fmt.Sprintf("v%d_%d_%d", ver.Major, ver.Minor, ver.Patch)
 	}
 
+	var services []serverless.Service
+	var customDomains []serverless.CustomDomain
+
 	for _, service := range template.Services {
+		serviceName, err := ctx.GetServiceName(service.Name)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		service.Name = serviceName
+		services = append(services, service)
+	}
+
+	req := fc.NewListCustomDomainsInput()
+	resp, err := ctx.fcClient.ListCustomDomains(req)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	for _, customDomain := range template.CustomDomains {
+		cdc := customDomain
+		cdc.RouteConfig.Routes = make([]serverless.PathConfig, 0, len(customDomain.RouteConfig.Routes))
+		for _, route := range customDomain.RouteConfig.Routes {
+			serviceName, err := ctx.GetServiceName(route.ServiceName)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			route.ServiceName = serviceName
+			cdc.RouteConfig.Routes = append(cdc.RouteConfig.Routes, route)
+		}
+		domainName := customDomain.DomainName
+		if domainName == "Auto" {
+			for _, tplRoute := range cdc.RouteConfig.Routes {
+				serviceName := tplRoute.ServiceName
+				functionName := tplRoute.FunctionName
+				for _, cdr := range resp.CustomDomains {
+					if strings.HasSuffix(*cdr.DomainName, ".test.functioncompute.com") {
+						for _, route := range cdr.RouteConfig.Routes {
+							if *route.ServiceName == serviceName && *route.FunctionName == functionName {
+								domainName = *cdr.DomainName
+							}
+						}
+					}
+				}
+			}
+		}
+		if domainName == "Auto" {
+			panic("can not handle 'DomainName: Auto'")
+		}
+		cdc.DomainName = domainName
+		customDomains = append(customDomains, cdc)
+	}
+
+	for _, service := range services {
 		if _, err = PublishAndCreateAlias(ctx, service.Name, releaseVersion, aliasName); err != nil {
 			log.Fatalln(err)
 		}
@@ -137,13 +188,13 @@ func main() {
 			}
 		}
 	}
-	for _, customDomain := range template.CustomDomains {
+	for _, customDomain := range customDomains {
 		if err = UpdateCustomDomain(ctx, customDomain, aliasName); err != nil {
 			log.Fatalln(err)
 		}
 	}
 	if !noProvision && !ctx.snapshot {
-		for _, service := range template.Services {
+		for _, service := range services {
 			for _, function := range service.Functions {
 				if err = CreateProvisionConfig(ctx, service.Name, aliasName, function.Name, instances); err != nil {
 					log.Fatalln(err)
@@ -214,7 +265,7 @@ func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, tr
 	createTriggerInput.WithTriggerName(triggerName)
 	createTriggerInput.WithTriggerType("http")
 	triggerConfig := fc.NewHTTPTriggerConfig()
-	triggerConfig.WithAuthType(trigger.HTTP.AuthType)
+	triggerConfig.WithAuthType(strings.ToLower(trigger.HTTP.AuthType))
 	triggerConfig.WithMethods(trigger.HTTP.Methods...)
 	createTriggerInput.WithTriggerConfig(triggerConfig)
 	createTriggerInput.WithDescription(releaseVersion)
@@ -378,6 +429,7 @@ func (ctx *Context) GetServiceName(serviceName string) (string, error) {
 	if rosServiceName == "" {
 		return "", fmt.Errorf("can not get ROS ServiceName for service %s", serviceName)
 	}
+	// TODO: cache rosServiceName for serviceName
 	return rosServiceName, nil
 }
 
