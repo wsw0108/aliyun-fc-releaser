@@ -51,7 +51,7 @@ func main() {
 	flag.StringVar(&configFile, "c", defaultConfigFile, "config file of funcraft")
 	flag.StringVar(&templateFile, "t", "template.yml", "template.yml to use")
 	flag.StringVar(&releaseVersion, "r", "", "release version")
-	flag.Int64Var(&instances, "instances", 1, "number of instances")
+	flag.Int64Var(&instances, "instances", 0, "number of instances")
 	flag.BoolVar(&noProvision, "no-provision", false, "do not create provision")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
 	flag.StringVar(&regionID, "region", "", "region name, default value will be extracted from endpoint")
