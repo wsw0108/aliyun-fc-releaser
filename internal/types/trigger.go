@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 var TimeLayout = time.RFC3339[:(len(time.RFC3339) - 5)]
 
@@ -22,6 +25,12 @@ func (ts Triggers) Len() int {
 }
 
 func (ts Triggers) Less(i, j int) bool {
+	if strings.HasSuffix(ts[i].Qualifier, "-pre") && !strings.HasSuffix(ts[j].Qualifier, "-pre") {
+		return true
+	}
+	if !strings.HasSuffix(ts[i].Qualifier, "-pre") && strings.HasSuffix(ts[j].Qualifier, "-pre") {
+		return false
+	}
 	if ts[i].ModifyTime.Before(ts[j].ModifyTime) {
 		return true
 	}

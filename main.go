@@ -42,6 +42,7 @@ func main() {
 		noProvision    bool
 		stackName      string
 		regionID       string
+		dryRun         bool
 	)
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -55,6 +56,7 @@ func main() {
 	flag.BoolVar(&noProvision, "no-provision", false, "do not create provision")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
 	flag.StringVar(&regionID, "region", "", "region name, default value will be extracted from endpoint")
+	flag.BoolVar(&dryRun, "dry-run", false, "do not perform real update")
 	flag.Parse()
 
 	var config Config
@@ -96,6 +98,7 @@ func main() {
 	}
 
 	ctx := &Context{
+		dryRun:    dryRun,
 		stackName: stackName,
 		regionID:  regionID,
 	}
@@ -174,10 +177,12 @@ func main() {
 	}
 
 	for _, service := range services {
+		log.Printf("Publish version and alias for service %s", service.Name)
 		if _, err = PublishAndCreateAlias(ctx, service.Name, releaseVersion, aliasName); err != nil {
 			log.Fatalln(err)
 		}
 		for _, function := range service.Functions {
+			log.Printf("Create HTTP Trigger for function %s", function.Name)
 			for _, trigger := range function.Triggers {
 				if trigger.Type != "HTTP" {
 					continue
@@ -205,23 +210,75 @@ func main() {
 }
 
 func PublishAndCreateAlias(ctx *Context, serviceName string, releaseVersion string, aliasName string) (string, error) {
-	publishServiceVersionInput := fc.NewPublishServiceVersionInput(serviceName)
-	publishServiceVersionInput.WithDescription(releaseVersion)
-	publishServiceVersionOutput, err := ctx.fcClient.PublishServiceVersion(publishServiceVersionInput)
-	// NOTE: "can not publish version for service 'xxx', detail: 'No changes were made since last publish'"
-	if err != nil {
-		return "", err
+	listServiceVersionsInput := fc.NewListServiceVersionsInput(serviceName)
+	published := false
+	var publishedVersionID string
+	{
+		resp, err := ctx.fcClient.ListServiceVersions(listServiceVersionsInput)
+		if err != nil {
+			return "", err
+		}
+		for _, vm := range resp.Versions {
+			if vm.Description == nil {
+				continue
+			}
+			if *vm.Description == releaseVersion {
+				published = true
+				publishedVersionID = *vm.VersionID
+				break
+			}
+		}
 	}
-	createAliasInput := fc.NewCreateAliasInput(serviceName)
-	createAliasInput.WithVersionID(*publishServiceVersionOutput.VersionID)
-	createAliasInput.WithAliasName(aliasName)
-	createAliasInput.WithDescription(releaseVersion)
-	createAliasOutput, err := ctx.fcClient.CreateAlias(createAliasInput)
-	if err != nil {
-		return "", err
+	if published {
+		log.Printf("Version %s[%s] for service %s already published", releaseVersion, publishedVersionID, serviceName)
+	}
+	listAliasInput := fc.NewListAliasesInput(serviceName)
+	aliasExists := false
+	var aliasVersionID string
+	{
+		resp, err := ctx.fcClient.ListAliases(listAliasInput)
+		if err != nil {
+			return "", err
+		}
+		for _, am := range resp.Aliases {
+			if am.AliasName == nil {
+				continue
+			}
+			if *am.AliasName == aliasName {
+				aliasExists = true
+				aliasVersionID = *am.VersionID
+				break
+			}
+		}
+	}
+	if aliasExists {
+		log.Printf("Alias %s for version %s[%s] of service %s already exists", aliasName, releaseVersion, aliasVersionID, serviceName)
+	}
+	if ctx.dryRun {
+		return "", nil
+	}
+	if !published {
+		publishServiceVersionInput := fc.NewPublishServiceVersionInput(serviceName)
+		publishServiceVersionInput.WithDescription(releaseVersion)
+		publishServiceVersionOutput, err := ctx.fcClient.PublishServiceVersion(publishServiceVersionInput)
+		// NOTE: "can not publish version for service 'xxx', detail: 'No changes were made since last publish'"
+		if err != nil {
+			return "", err
+		}
+		publishedVersionID = *publishServiceVersionOutput.VersionID
+	}
+	if !aliasExists {
+		createAliasInput := fc.NewCreateAliasInput(serviceName)
+		createAliasInput.WithVersionID(publishedVersionID)
+		createAliasInput.WithAliasName(aliasName)
+		createAliasInput.WithDescription(releaseVersion)
+		_, err := ctx.fcClient.CreateAlias(createAliasInput)
+		if err != nil {
+			return "", err
+		}
 	}
 	// TODO: 同时创建相应的ROS资源？
-	return *createAliasOutput.VersionID, nil
+	return publishedVersionID, nil
 }
 
 func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, trigger serverless.Trigger, releaseVersion string, qualifier string) error {
@@ -230,26 +287,34 @@ func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, tr
 	if err != nil {
 		return err
 	}
-	if len(listTriggerOutput.Triggers) >= types.MaxTriggers {
-		var triggers types.Triggers
-		for _, tm := range listTriggerOutput.Triggers {
-			createTime, _ := time.Parse(types.TimeLayout, *tm.CreatedTime)
-			modifyTime, _ := time.Parse(types.TimeLayout, *tm.LastModifiedTime)
-			tt := types.Trigger{
-				CreateTime: createTime,
-				ModifyTime: modifyTime,
-				Name:       *tm.TriggerName,
-			}
-			if tm.Qualifier != nil {
-				tt.Qualifier = *tm.Qualifier
-			}
-			triggers = append(triggers, tt)
+	var triggers types.Triggers
+	for _, tm := range listTriggerOutput.Triggers {
+		createTime, _ := time.Parse(types.TimeLayout, *tm.CreatedTime)
+		modifyTime, _ := time.Parse(types.TimeLayout, *tm.LastModifiedTime)
+		tt := types.Trigger{
+			CreateTime: createTime,
+			ModifyTime: modifyTime,
+			Name:       *tm.TriggerName,
 		}
-		sort.Sort(triggers)
+		if tm.Qualifier != nil {
+			tt.Qualifier = *tm.Qualifier
+		}
+		triggers = append(triggers, tt)
+	}
+	sort.Sort(triggers)
+	log.Printf("Existing Triggers:")
+	for _, tm := range triggers {
+		log.Printf("  name: %s, qualifier [%s]", tm.Name, tm.Qualifier)
+	}
+	if len(triggers) >= types.MaxTriggers {
 		triggersToDelete := triggers[:(len(triggers) - (types.MaxTriggers - 1))]
+		log.Printf("Triggers to delete:")
 		for _, td := range triggersToDelete {
-			deleteTriggerInput := fc.NewDeleteTriggerInput(serviceName, functionName, td.Name)
-			_, err = ctx.fcClient.DeleteTrigger(deleteTriggerInput)
+			log.Printf("  name %s, qualifier [%s]", td.Name, td.Qualifier)
+			if !ctx.dryRun {
+				deleteTriggerInput := fc.NewDeleteTriggerInput(serviceName, functionName, td.Name)
+				_, err = ctx.fcClient.DeleteTrigger(deleteTriggerInput)
+			}
 			if err != nil {
 				return err
 			}
@@ -258,10 +323,15 @@ func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, tr
 			}
 		}
 	}
+	triggerName := fmt.Sprintf("%s-%s", trigger.Name, qualifier)
+	log.Printf("Create Trigger:")
+	log.Printf("  name %s, qualifier [%s]", triggerName, qualifier)
+	if ctx.dryRun {
+		return nil
+	}
 	createTriggerInput := fc.NewCreateTriggerInput(serviceName, functionName)
 	// NOTE: 一个版本qualifier只能创建一个触发器
 	createTriggerInput.WithQualifier(qualifier)
-	triggerName := fmt.Sprintf("%s-%s", trigger.Name, qualifier)
 	createTriggerInput.WithTriggerName(triggerName)
 	createTriggerInput.WithTriggerType("http")
 	triggerConfig := fc.NewHTTPTriggerConfig()
@@ -321,7 +391,15 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 		}
 	}
 	updateCustomDomainInput.WithRouteConfig(routeConfig)
-	_, err = ctx.fcClient.UpdateCustomDomain(updateCustomDomainInput)
+	if ctx.dryRun {
+		log.Printf("Name of Custom Domain to update: %s", customDomain.DomainName)
+		log.Printf("Routes of Custom Domain to update:")
+		for _, route := range routeConfig.Routes {
+			log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
+		}
+	} else {
+		_, err = ctx.fcClient.UpdateCustomDomain(updateCustomDomainInput)
+	}
 	return err
 }
 
@@ -366,6 +444,8 @@ func CreateProvisionConfig(ctx *Context, serviceName string, qualifier string, f
 }
 
 type Context struct {
+	dryRun bool
+
 	stackName string
 	regionID  string
 
