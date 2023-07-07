@@ -182,7 +182,7 @@ func main() {
 			log.Fatalln(err)
 		}
 		for _, function := range service.Functions {
-			log.Printf("Create HTTP Trigger for function %s", function.Name)
+			log.Printf("Create HTTP Triggers for function %s", function.Name)
 			for _, trigger := range function.Triggers {
 				if trigger.Type != "HTTP" {
 					continue
@@ -282,13 +282,18 @@ func PublishAndCreateAlias(ctx *Context, serviceName string, releaseVersion stri
 }
 
 func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, trigger serverless.Trigger, releaseVersion string, qualifier string) error {
+	triggerName := fmt.Sprintf("%s-%s", trigger.Name, qualifier)
 	listTriggerInput := fc.NewListTriggersInput(serviceName, functionName)
 	listTriggerOutput, err := ctx.fcClient.ListTriggers(listTriggerInput)
 	if err != nil {
 		return err
 	}
+	triggerExists := false
 	var triggers types.Triggers
 	for _, tm := range listTriggerOutput.Triggers {
+		if *tm.TriggerName == triggerName {
+			triggerExists = true
+		}
 		createTime, _ := time.Parse(types.TimeLayout, *tm.CreatedTime)
 		modifyTime, _ := time.Parse(types.TimeLayout, *tm.LastModifiedTime)
 		tt := types.Trigger{
@@ -305,6 +310,10 @@ func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, tr
 	log.Printf("Existing Triggers:")
 	for _, tm := range triggers {
 		log.Printf("  name: %s, qualifier [%s]", tm.Name, tm.Qualifier)
+	}
+	if triggerExists {
+		log.Printf("Trigger %s already exists", triggerName)
+		return nil
 	}
 	if len(triggers) >= types.MaxTriggers {
 		triggersToDelete := triggers[:(len(triggers) - (types.MaxTriggers - 1))]
@@ -323,7 +332,6 @@ func CreateHttpTrigger(ctx *Context, serviceName string, functionName string, tr
 			}
 		}
 	}
-	triggerName := fmt.Sprintf("%s-%s", trigger.Name, qualifier)
 	log.Printf("Create Trigger:")
 	log.Printf("  name %s, qualifier [%s]", triggerName, qualifier)
 	if ctx.dryRun {
@@ -377,6 +385,14 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 		}
 		routeConfig.Routes = append(routeConfig.Routes, route)
 	}
+	routeExistsInConfig := func(routeConfig *fc.RouteConfig, route *fc.PathConfig) bool {
+		for _, r := range routeConfig.Routes {
+			if *r.ServiceName == *route.ServiceName && *r.FunctionName == *route.FunctionName && *r.Path == *route.Path && *r.Qualifier == *route.Qualifier {
+				return true
+			}
+		}
+		return false
+	}
 	if ctx.snapshot {
 		for _, route := range customDomain.RouteConfig.Routes {
 			newRoute := fc.PathConfig{}
@@ -387,17 +403,18 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 			newRoute.FunctionName = &route.FunctionName
 			newRoute.Qualifier = &qualifier
 			// newRoute.Methods = route.Methods
-			routeConfig.Routes = append(routeConfig.Routes, newRoute)
+			if !routeExistsInConfig(routeConfig, &newRoute) {
+				routeConfig.Routes = append(routeConfig.Routes, newRoute)
+			}
 		}
 	}
 	updateCustomDomainInput.WithRouteConfig(routeConfig)
-	if ctx.dryRun {
-		log.Printf("Name of Custom Domain to update: %s", customDomain.DomainName)
-		log.Printf("Routes of Custom Domain to update:")
-		for _, route := range routeConfig.Routes {
-			log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
-		}
-	} else {
+	log.Printf("Name of Custom Domain to update: %s", customDomain.DomainName)
+	log.Printf("Routes of Custom Domain to update:")
+	for _, route := range routeConfig.Routes {
+		log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
+	}
+	if !ctx.dryRun {
 		_, err = ctx.fcClient.UpdateCustomDomain(updateCustomDomainInput)
 	}
 	return err
