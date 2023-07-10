@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -363,7 +362,34 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 		}
 	}
 	if routeConfigToUpdate == nil {
-		return errors.New("can not find custom domain to update routes")
+		log.Printf("Name of Custom Domain to create: %s", customDomain.DomainName)
+		createCustomDomainInput := fc.NewCreateCustomDomainInput()
+		createCustomDomainInput.DomainName = &customDomain.DomainName
+		createCustomDomainInput.Protocol = &customDomain.Protocol
+		routeConfig := fc.NewRouteConfig()
+		for _, route := range customDomain.RouteConfig.Routes {
+			newRoute := fc.PathConfig{}
+			newRoute.Path = &route.Path
+			newRoute.ServiceName = &route.ServiceName
+			newRoute.FunctionName = &route.FunctionName
+			newRoute.Qualifier = &qualifier
+			// newRoute.Methods = route.Methods
+			routeConfig.Routes = append(routeConfig.Routes, newRoute)
+		}
+		createCustomDomainInput.RouteConfig = routeConfig
+		certConfig := fc.CertConfig{}
+		certConfig.CertName = &customDomain.CertConfig.CertName
+		certConfig.Certificate = &customDomain.CertConfig.Certificate
+		certConfig.PrivateKey = &customDomain.CertConfig.PrivateKey
+		createCustomDomainInput.CertConfig = &certConfig
+		log.Printf("Routes of Custom Domain:")
+		for _, route := range routeConfig.Routes {
+			log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
+		}
+		if !ctx.dryRun {
+			_, err = ctx.fcClient.CreateCustomDomain(createCustomDomainInput)
+		}
+		return err
 	}
 	updateCustomDomainInput := fc.NewUpdateCustomDomainInput(customDomain.DomainName)
 	updateCustomDomainInput.WithProtocol(customDomain.Protocol)

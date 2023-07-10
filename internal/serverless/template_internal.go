@@ -107,6 +107,16 @@ type function struct {
 	Events     map[string]functionEvent `yaml:"Events"`
 }
 
+type tlsConfig struct {
+	MinVersion string `yaml:"MinVersion"`
+}
+
+type certConfig struct {
+	CertName    string `yaml:"CertName"`
+	Certificate string `yaml:"Certificate"`
+	PrivateKey  string `yaml:"PrivateKey"`
+}
+
 type pathConfig struct {
 	ServiceName  string `yaml:"ServiceName"`
 	FunctionName string `yaml:"FunctionName"`
@@ -119,6 +129,8 @@ type routeConfig struct {
 type domainProperties struct {
 	DomainName  string      `yaml:"DomainName"`
 	Protocol    string      `yaml:"Protocol"`
+	TLSConfig   tlsConfig   `yaml:"TLSConfig"`
+	CertConfig  certConfig  `yaml:"CertConfig"`
 	RouteConfig routeConfig `yaml:"RouteConfig"`
 }
 

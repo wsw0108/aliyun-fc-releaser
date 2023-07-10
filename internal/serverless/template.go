@@ -58,11 +58,18 @@ type RouteConfig struct {
 	Routes []PathConfig
 }
 
+type CertConfig struct {
+	CertName    string
+	PrivateKey  string
+	Certificate string
+}
+
 type CustomDomain struct {
 	Name        string
 	DomainName  string
 	Protocol    string
 	RouteConfig RouteConfig
+	CertConfig  CertConfig
 }
 
 type Template struct {
@@ -117,6 +124,9 @@ func convertCustomDomain(name string, res domain) (d CustomDomain) {
 	d.Name = name
 	d.DomainName = res.Properties.DomainName
 	d.Protocol = res.Properties.Protocol
+	d.CertConfig.CertName = res.Properties.CertConfig.CertName
+	d.CertConfig.Certificate = res.Properties.CertConfig.Certificate
+	d.CertConfig.PrivateKey = res.Properties.CertConfig.PrivateKey
 	for path, route := range res.Properties.RouteConfig.Routes {
 		r := PathConfig{
 			Path:         path,
