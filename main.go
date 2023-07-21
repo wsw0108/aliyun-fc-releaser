@@ -384,7 +384,11 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 		createCustomDomainInput.CertConfig = &certConfig
 		log.Printf("Routes of Custom Domain:")
 		for _, route := range routeConfig.Routes {
-			log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
+			if route.Qualifier != nil {
+				log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
+			} else {
+				log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, "")
+			}
 		}
 		if !ctx.dryRun {
 			_, err = ctx.fcClient.CreateCustomDomain(createCustomDomainInput)
@@ -438,7 +442,11 @@ func UpdateCustomDomain(ctx *Context, customDomain serverless.CustomDomain, qual
 	log.Printf("Name of Custom Domain to update: %s", customDomain.DomainName)
 	log.Printf("Routes of Custom Domain to update:")
 	for _, route := range routeConfig.Routes {
-		log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
+		if route.Qualifier != nil {
+			log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, *route.Qualifier)
+		} else {
+			log.Printf("  service %s, function %s, path %s, qualifier [%s]", *route.ServiceName, *route.FunctionName, *route.Path, "")
+		}
 	}
 	if !ctx.dryRun {
 		_, err = ctx.fcClient.UpdateCustomDomain(updateCustomDomainInput)
