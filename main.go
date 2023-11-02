@@ -23,13 +23,8 @@ import (
 
 type Config struct {
 	Endpoint        string `yaml:"endpoint"`
-	ApiVersion      string `yaml:"api_version"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
-	SecurityToken   string `yaml:"security_token"`
-	Debug           bool   `yaml:"debug"`
-	Timeout         int    `yaml:"timeout"`
-	Retries         int    `yaml:"retries"`
 }
 
 func main() {
@@ -47,8 +42,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	defaultConfigFile := filepath.Join(home, ".fcli", "config.yaml")
-	flag.StringVar(&configFile, "c", defaultConfigFile, "config file of funcraft")
+	flag.StringVar(&configFile, "c", "", "config file contains credentials to release to fc")
 	flag.StringVar(&templateFile, "t", "template.yml", "template.yml to use")
 	flag.StringVar(&releaseVersion, "r", "", "release version")
 	flag.Int64Var(&instances, "instances", 0, "number of instances")
@@ -58,15 +52,30 @@ func main() {
 	flag.BoolVar(&dryRun, "dry-run", false, "do not perform real update")
 	flag.Parse()
 
-	var config Config
-	cf, err := os.Open(configFile)
-	if err != nil {
-		log.Fatalln(err)
+	newConfigFile := filepath.Join(home, ".config", "aliyun-fc-releaser", "credentials.yaml")
+	funConfigFile := filepath.Join(home, ".fcli", "config.yaml")
+	configFiles := []string{configFile, newConfigFile, funConfigFile}
+
+	var config *Config
+	for _, filename := range configFiles {
+		if filename == "" {
+			continue
+		}
+		f, err1 := os.Open(configFile)
+		if err != nil {
+			log.Println(err1)
+			continue
+		}
+		defer f.Close()
+		err1 = yaml.NewDecoder(f).Decode(&config)
+		if err1 != nil {
+			log.Println(err1)
+			continue
+		}
+		break
 	}
-	defer cf.Close()
-	err = yaml.NewDecoder(cf).Decode(&config)
-	if err != nil {
-		log.Fatalln(err)
+	if config == nil {
+		log.Fatalln("can not read config file")
 	}
 
 	if regionID == "" {
@@ -102,7 +111,7 @@ func main() {
 		regionID:  regionID,
 	}
 
-	ctx.fcClient, err = fc.NewClient(config.Endpoint, config.ApiVersion, config.AccessKeyID, config.AccessKeySecret)
+	ctx.fcClient, err = fc.NewClient(config.Endpoint, "2016-08-15", config.AccessKeyID, config.AccessKeySecret)
 	if err != nil {
 		log.Fatalln(err)
 	}
