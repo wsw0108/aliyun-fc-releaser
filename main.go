@@ -22,9 +22,24 @@ import (
 )
 
 type Config struct {
-	Endpoint        string `yaml:"endpoint"`
+	Endpoint        string `yaml:"endpoint,omitempty"`
+	RegionID        string `yaml:"region_id,omitempty"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
+}
+
+func loadConfig(configFile string) (*Config, error) {
+	f, err := os.Open(configFile)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var decoded Config
+	err = yaml.NewDecoder(f).Decode(&decoded)
+	if err != nil {
+		return nil, err
+	}
+	return &decoded, nil
 }
 
 func main() {
@@ -52,32 +67,34 @@ func main() {
 	flag.BoolVar(&dryRun, "dry-run", false, "do not perform real update")
 	flag.Parse()
 
+	// XXX: no endpoint in new config
 	newConfigFile := filepath.Join(home, ".config", "aliyun-fc-releaser", "credentials.yaml")
 	funConfigFile := filepath.Join(home, ".fcli", "config.yaml")
-	configFiles := []string{configFile, newConfigFile, funConfigFile}
+	configFiles := []string{configFile, funConfigFile, newConfigFile}
 
 	var config *Config
+	var useConfigFile string
 	for _, filename := range configFiles {
 		if filename == "" {
 			continue
 		}
-		f, err1 := os.Open(configFile)
-		if err != nil {
-			log.Println(err1)
-			continue
-		}
-		defer f.Close()
-		err1 = yaml.NewDecoder(f).Decode(&config)
+		decoded, err1 := loadConfig(filename)
 		if err1 != nil {
 			log.Println(err1)
 			continue
 		}
+		config = decoded
+		useConfigFile = filename
 		break
 	}
 	if config == nil {
 		log.Fatalln("can not read config file")
 	}
+	log.Println("Using config file", useConfigFile)
 
+	if regionID == "" {
+		regionID = config.RegionID
+	}
 	if regionID == "" {
 		regionID = extractRegion(config.Endpoint)
 	}
@@ -137,9 +154,9 @@ func main() {
 	var customDomains []serverless.CustomDomain
 
 	for _, service := range template.Services {
-		serviceName, err := ctx.GetServiceName(service.Name)
-		if err != nil {
-			log.Fatalln(err)
+		serviceName, err1 := ctx.GetServiceName(service.Name)
+		if err1 != nil {
+			log.Fatalln(err1)
 		}
 		service.Name = serviceName
 		services = append(services, service)
@@ -154,9 +171,9 @@ func main() {
 		cdc := customDomain
 		cdc.RouteConfig.Routes = make([]serverless.PathConfig, 0, len(customDomain.RouteConfig.Routes))
 		for _, route := range customDomain.RouteConfig.Routes {
-			serviceName, err := ctx.GetServiceName(route.ServiceName)
-			if err != nil {
-				log.Fatalln(err)
+			serviceName, err1 := ctx.GetServiceName(route.ServiceName)
+			if err1 != nil {
+				log.Fatalln(err1)
 			}
 			route.ServiceName = serviceName
 			cdc.RouteConfig.Routes = append(cdc.RouteConfig.Routes, route)

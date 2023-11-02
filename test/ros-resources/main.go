@@ -20,7 +20,7 @@ import (
 	ros2 "github.com/denverdino/aliyungo/ros"
 	"github.com/denverdino/aliyungo/ros/standard"
 	"github.com/wsw0108/aliyun-fc-releaser/internal/types"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
