@@ -48,7 +48,6 @@ func main() {
 		templateFile   string
 		releaseVersion string
 		instances      int64
-		noProvision    bool
 		stackName      string
 		regionID       string
 		dryRun         bool
@@ -61,7 +60,6 @@ func main() {
 	flag.StringVar(&templateFile, "t", "template.yml", "template.yml to use")
 	flag.StringVar(&releaseVersion, "r", "", "release version")
 	flag.Int64Var(&instances, "instances", 0, "number of instances")
-	flag.BoolVar(&noProvision, "no-provision", false, "do not create provision")
 	flag.StringVar(&stackName, "stack-name", "", "ros stack name")
 	flag.StringVar(&regionID, "region", "", "region name, default value will be extracted from endpoint")
 	flag.BoolVar(&dryRun, "dry-run", false, "do not perform real update")
@@ -70,7 +68,7 @@ func main() {
 	// XXX: no endpoint in new config
 	newConfigFile := filepath.Join(home, ".config", "aliyun-fc-releaser", "credentials.yaml")
 	funConfigFile := filepath.Join(home, ".fcli", "config.yaml")
-	configFiles := []string{configFile, funConfigFile, newConfigFile}
+	configFiles := []string{configFile, newConfigFile, funConfigFile}
 
 	var config *Config
 	var useConfigFile string
@@ -223,7 +221,7 @@ func main() {
 			log.Fatalln(err)
 		}
 	}
-	if !noProvision && !ctx.snapshot {
+	if !ctx.snapshot && instances > 0 {
 		for _, service := range services {
 			for _, function := range service.Functions {
 				if err = CreateProvisionConfig(ctx, service.Name, aliasName, function.Name, instances); err != nil {
@@ -243,6 +241,10 @@ func PublishAndCreateAlias(ctx *Context, serviceName string, releaseVersion stri
 		if err != nil {
 			return "", err
 		}
+		log.Println("Existing versions:")
+		for _, vm := range resp.Versions {
+			log.Printf("  id: %s, description: %s", *vm.VersionID, *vm.Description)
+		}
 		for _, vm := range resp.Versions {
 			if vm.Description == nil {
 				continue
@@ -256,6 +258,8 @@ func PublishAndCreateAlias(ctx *Context, serviceName string, releaseVersion stri
 	}
 	if published {
 		log.Printf("Version %s[%s] for service %s already published", releaseVersion, publishedVersionID, serviceName)
+	} else {
+		log.Printf("Version %s for service %s will be published", releaseVersion, serviceName)
 	}
 	listAliasInput := fc.NewListAliasesInput(serviceName)
 	aliasExists := false
@@ -264,6 +268,10 @@ func PublishAndCreateAlias(ctx *Context, serviceName string, releaseVersion stri
 		resp, err := ctx.fcClient.ListAliases(listAliasInput)
 		if err != nil {
 			return "", err
+		}
+		log.Println("Existing alias:")
+		for _, am := range resp.Aliases {
+			log.Printf("  name: %s, id: %s, description: %s", *am.AliasName, *am.VersionID, *am.Description)
 		}
 		for _, am := range resp.Aliases {
 			if am.AliasName == nil {
@@ -278,6 +286,8 @@ func PublishAndCreateAlias(ctx *Context, serviceName string, releaseVersion stri
 	}
 	if aliasExists {
 		log.Printf("Alias %s for version %s[%s] of service %s already exists", aliasName, releaseVersion, aliasVersionID, serviceName)
+	} else {
+		log.Printf("Alias %s for version %s of service %s will be created", aliasName, releaseVersion, serviceName)
 	}
 	if ctx.dryRun {
 		return "", nil
@@ -486,16 +496,10 @@ func CreateProvisionConfig(ctx *Context, serviceName string, qualifier string, f
 	if err != nil {
 		return err
 	}
-	putProvisionConfigInput := fc.NewPutProvisionConfigInput(serviceName, qualifier, functionName)
-	putProvisionConfigInput.WithTarget(targetInstances)
-	_, err = ctx.fcClient.PutProvisionConfig(putProvisionConfigInput)
-	if err != nil {
-		return err
-	}
-	// TODO: 同时创建相应ROS资源
 	resourcePattern := fmt.Sprintf("^.*#%s#(.+)#%s$", serviceName, functionName)
 	resourceRegex := regexp.MustCompile(resourcePattern)
 	var qualifiers []string
+
 	for _, pc := range listProvisionConfigsOutput.ProvisionConfigs {
 		if pc.Resource == nil || pc.Current == nil || pc.Target == nil {
 			continue
@@ -509,6 +513,24 @@ func CreateProvisionConfig(ctx *Context, serviceName string, qualifier string, f
 		}
 		qualifiers = append(qualifiers, matches[1])
 	}
+	if ctx.dryRun {
+		log.Println("Existing provision configs:")
+		for _, pc := range listProvisionConfigsOutput.ProvisionConfigs {
+			fmt.Println(*pc)
+		}
+		log.Println("Qualifiers to update:")
+		for _, s := range qualifiers {
+			fmt.Println(s)
+		}
+		return nil
+	}
+	putProvisionConfigInput := fc.NewPutProvisionConfigInput(serviceName, qualifier, functionName)
+	putProvisionConfigInput.WithTarget(targetInstances)
+	_, err = ctx.fcClient.PutProvisionConfig(putProvisionConfigInput)
+	if err != nil {
+		return err
+	}
+	// TODO: 同时创建相应ROS资源
 	if len(qualifiers) > 0 {
 		for _, qualifierToUpdate := range qualifiers {
 			updateProvisionConfigInput := fc.NewPutProvisionConfigInput(serviceName, qualifierToUpdate, functionName)
@@ -595,6 +617,7 @@ type ResourceAttribute struct {
 	ResourceAttributeValue interface{}
 	ResourceAttributeKey   string
 }
+
 type GetStackResourceResponse struct {
 	Status            string
 	Description       string
