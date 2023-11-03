@@ -65,10 +65,8 @@ func main() {
 	flag.BoolVar(&dryRun, "dry-run", false, "do not perform real update")
 	flag.Parse()
 
-	// XXX: no endpoint in new config
-	newConfigFile := filepath.Join(home, ".config", "aliyun-fc-releaser", "credentials.yaml")
 	funConfigFile := filepath.Join(home, ".fcli", "config.yaml")
-	configFiles := []string{configFile, newConfigFile, funConfigFile}
+	configFiles := []string{configFile, funConfigFile}
 
 	var config *Config
 	var useConfigFile string
