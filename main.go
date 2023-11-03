@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	ros "github.com/alibabacloud-go/ros-20190910/v4/client"
 	"github.com/aliyun/fc-go-sdk"
 	"github.com/blang/semver/v4"
-	"github.com/denverdino/aliyungo/common"
-	"github.com/denverdino/aliyungo/ros/standard"
 	"github.com/wsw0108/aliyun-fc-releaser/internal/serverless"
 	"github.com/wsw0108/aliyun-fc-releaser/internal/types"
 	"gopkg.in/yaml.v3"
@@ -124,13 +124,23 @@ func main() {
 		regionID:  regionID,
 	}
 
-	ctx.fcClient, err = fc.NewClient(config.Endpoint, "2016-08-15", config.AccessKeyID, config.AccessKeySecret)
-	if err != nil {
-		log.Fatalln(err)
+	{
+		client, err := fc.NewClient(config.Endpoint, "2016-08-15", config.AccessKeyID, config.AccessKeySecret)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		ctx.fcClient = client
 	}
 
 	if stackName != "" {
-		ctx.rosClient = standard.NewROSClient(config.AccessKeyID, config.AccessKeySecret, common.Region(regionID))
+		apiConfig := openapi.Config{}
+		apiConfig.SetAccessKeyId(config.AccessKeyID)
+		apiConfig.SetAccessKeySecret(config.AccessKeySecret)
+		client, err := ros.NewClient(&apiConfig)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		ctx.rosClient = client
 	}
 
 	// NOTE: 1.2.3/v1.2.3 -> v1_2_3, （字母开头，字母数字下划线中划线）
@@ -547,7 +557,7 @@ type Context struct {
 	regionID  string
 
 	fcClient  *fc.Client
-	rosClient *standard.Client
+	rosClient *ros.Client
 
 	snapshot      bool
 	prevQualifier string
@@ -560,17 +570,18 @@ func (ctx *Context) getStackID() (string, error) {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 	if ctx.stackID == "" {
-		resp, err := ctx.rosClient.ListStacks(&standard.ListStacksRequest{
-			StackName: []string{ctx.stackName},
+		resp, err := ctx.rosClient.ListStacks(&ros.ListStacksRequest{
+			StackName: []*string{&ctx.stackName},
+			RegionId:  &ctx.regionID,
 		})
 		if err != nil {
 			return "", err
 		}
 		// FIXME: ListStacks does not filter out stacks by specified stackName
 		var found bool
-		for _, stack := range resp.Stacks {
-			if stack.StackName == ctx.stackName {
-				ctx.stackID = stack.StackId
+		for _, stack := range resp.Body.Stacks {
+			if *stack.StackName == ctx.stackName {
+				ctx.stackID = *stack.StackId
 				found = true
 				break
 			}
@@ -587,20 +598,27 @@ func (ctx *Context) GetServiceName(serviceName string) (string, error) {
 		return serviceName, nil
 	}
 	ctx.getStackID()
-	req := &standard.GetStackResourceRequest{
-		StackId:                ctx.stackID,
-		LogicalResourceId:      serviceName,
-		ShowResourceAttributes: true,
+	req := ros.GetStackResourceRequest{
+		StackId:           &ctx.stackID,
+		RegionId:          &ctx.regionID,
+		LogicalResourceId: &serviceName,
 	}
-	res := &GetStackResourceResponse{}
-	err := ctx.rosClient.Invoke("GetStackResource", req, res)
+	req.SetShowResourceAttributes(true)
+	res, err := ctx.rosClient.GetStackResource(&req)
 	if err != nil {
 		return "", err
 	}
 	var rosServiceName string
-	for _, attr := range res.ResourceAttributes {
-		if attr.ResourceAttributeKey == "ServiceName" {
-			rosServiceName = attr.ResourceAttributeValue.(string)
+	for _, attr := range res.Body.ResourceAttributes {
+		if _, ok := attr["ResourceAttributeKey"]; !ok {
+			continue
+		}
+		if _, ok := attr["ResourceAttributeValue"]; !ok {
+			continue
+		}
+		key := attr["ResourceAttributeKey"].(string)
+		if key == "ServiceName" {
+			rosServiceName = attr["ResourceAttributeValue"].(string)
 			break
 		}
 	}
