@@ -141,7 +141,7 @@ func main() {
 		aliasName = "v" + aliasName
 	}
 	if len(ver.Pre) > 0 {
-		aliasName = aliasName + "-pre"
+		aliasName = aliasName + time.Now().Format("2006_01_02")
 		ctx.snapshot = true
 		ctx.prevQualifier = fmt.Sprintf("v%d_%d_%d", ver.Major, ver.Minor, ver.Patch)
 	}
